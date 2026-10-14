@@ -15,8 +15,14 @@ shifter forwards Who-Is, ReadProperty, ReadPropertyMultiple and ReadRange
 and nothing else, and the `limited` level, which adds change-of-value
 subscriptions.
 
-The shifter is built on the `bacnet` library at `../bacnet`, through a
-`replace` directive in `go.mod`, and changes nothing there.
+The shifter is built on the released `bacnet` library, v0.5.0 or later,
+which `go.mod` requires like any other module. To develop against a
+checkout of the library at `../bacnet` instead, add a workspace file,
+which git ignores:
+
+```bash
+go work init . ../bacnet
+```
 
 ## How it works
 
