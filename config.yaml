@@ -1,0 +1,79 @@
+# bacnet-shifter configuration. Every key is shown at its default; a key left
+# out takes it. The file is read from the directory the shifter starts in.
+# Durations are Go durations: 3s, 5m, 1h.
+
+# The site: the real BACnet network, reached through the bacnet library's client.
+site:
+  adapter: ""             # name or IPv4 address of the adapter on the site network; required unless sim is set
+  port: 47808             # UDP port on that adapter
+  bbmd: ""                # IP[:port] of a BBMD to register with as a foreign device, to reach a site on another subnet
+  bbmd_ttl: 5m            # registration lifetime, renewed halfway through
+  add: []                 # IP[:port] of devices no Who-Is reaches, read at start as the explorer's -add does
+  timeout: 3s             # wait for each reply from the site
+  retries: 2              # resends of a read or a notification that got no reply; a write is never resent
+  max_rps: 50             # requests the shifter sends the site in a second, all consumers together
+  max_in_flight_net: 1    # requests in flight at once to all the devices of one routed site network
+  whois_interval: 1s      # a consumer's Who-Is is forwarded to the site at most this often
+  cov_lifetime: 5m        # lifetime of the shifter's own subscriptions on the site, renewed by the client
+
+# The consumer side: the socket the shifter serves consumers on, as a router to the virtual network.
+consumer:
+  adapter: ""             # name or IPv4 address of the adapter on the consumer network; required unless sim is set; 127.0.0.1 for a consumer on this machine
+  port: 47808             # on Windows the two sides may share a port on two adapters; on Linux and macOS they cannot
+  network: 9000           # V: the virtual network the site's own IP subnet appears as; each site network behind a router gets a derived number of its own
+  recent: 10m             # a new device or network is also announced by unicast to every consumer heard from within this long
+  cov_max_lifetime: 24h   # ceiling on a consumer subscription's lifetime; 0 or absent in the request means this
+
+# What the shifter will send to the site: no-write | limited | full-service | god.
+# Each level includes the ones before it. god prints a banner and logs every forwarded request.
+control: no-write
+
+# Directory for the key and table.json. It must be readable by the shifter's account only.
+data: data
+
+log:
+  level: info             # debug | info | warn | error
+  frames: false           # log every datagram on both sockets, at debug
+
+# Run against the library's simulated devices on loopback instead of the adapters:
+# "" (off), default (sim.Start) or remote (sim.RemoteSite: a BBMD, a router and routed devices).
+sim: ""
+
+pseudonym:
+  replaced:               # properties whose character-string values are replaced with pseudonyms, on every object
+    - object-name
+    - description
+    - location
+    - model-name
+    - serial-number
+
+# The life-safety and alarm set: refused at full-service, forwarded only by god.
+reserved:
+  services:
+    - life-safety-operation
+    - acknowledge-alarm
+    - device-communication-control
+    - reinitialize-device
+    - add-list-element
+    - remove-list-element
+    - create-object
+    - delete-object
+    - atomic-read-file
+    - atomic-write-file
+  objects:
+    - life-safety-point
+    - life-safety-zone
+    - notification-class
+    - event-enrollment
+    - alert-enrollment
+  properties:
+    - out-of-service
+    - event-detection-enable
+    - event-enable
+    - limit-enable
+    - time-delay
+    - time-delay-normal
+    - notification-class
+    - notify-type
+    - recipient-list
+    - ack-required
