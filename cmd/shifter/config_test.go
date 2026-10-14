@@ -27,12 +27,12 @@ func TestRenderRoundTrip(t *testing.T) {
 	if err := d.Validate(); err != nil {
 		t.Errorf("the defaults under sim do not validate: %v", err)
 	}
-	repo, err := os.ReadFile("../../config.yaml")
+	repo, err := os.ReadFile("../../config.yaml.example")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(repo) != rendered {
-		t.Error("config.yaml in the repository is not Render(Defaults()); regenerate it by running the shifter in an empty directory")
+		t.Error("config.yaml.example in the repository is not Render(Defaults()); regenerate it by running the shifter in an empty directory and copying the config.yaml it writes")
 	}
 }
 

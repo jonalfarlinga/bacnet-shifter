@@ -51,8 +51,10 @@ go run ./cmd/shifter
 
 The shifter takes no arguments and reads `config.yaml` from the directory
 it is started in. When the file is absent it writes one with every key at
-its default and a comment each, says where, and exits. The copy in this
-repository is that output. Set at least:
+its default and a comment each, says where, and exits.
+`config.yaml.example` in this repository is that output; `config.yaml`
+itself is ignored by git, so the adapters you set stay out of the history.
+Set at least:
 
 - `site.adapter`: the name or IPv4 address of the adapter on the site
   network, as `ipconfig` or `ip addr` lists it.

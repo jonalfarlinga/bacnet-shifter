@@ -177,7 +177,7 @@ func duration(d time.Duration) string {
 }
 
 // Render writes the file with every key and a comment each, in the layout
-// of the spec. The repository's config.yaml is Render(Defaults()).
+// of the spec. The repository's config.yaml.example is Render(Defaults()).
 func Render(f File) string {
 	var b strings.Builder
 	line := func(indent int, key, value, comment string) {
