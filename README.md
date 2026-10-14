@@ -171,10 +171,14 @@ still cannot write to a site whose shifter is set to `no-write`. Every
 refusal is logged at `info` with the consumer's address, the service and
 the level.
 
-`full-service` and `god` are the next two milestones and are not built
-yet: with either set today the shifter behaves as `limited`, and the
-writes and services those levels would forward are refused with
-service-request-denied.
+`god` is the next milestone and is not built yet: with it set today the
+shifter forwards what `full-service` forwards, at any priority and without
+the reserved set, and refuses the rest with service-request-denied. The
+writes of `full-service` go through the library client's `WriteProperty`,
+which sends only to a device the client has been told is writable: the
+shifter switches each site device writable as it discovers it, at
+`full-service` and `god` only, so that below them the client's own guard
+refuses every write whatever the dispatch did.
 
 ## What `limited` adds
 
@@ -211,9 +215,53 @@ Test 4 of the spec covers this against the simulated site: the shared
 upstream subscription, the confirmed upgrade and its acknowledgements, the
 last cancellation and the shifter's close emptying the sim's subscriptions.
 
+## What `full-service` adds
+
+With `control: full-service` the shifter takes WriteProperty from
+consumers and applies these rules, in this order, before anything is sent:
+
+- **The array-index rule.** A write with an array index is refused with
+  Reject, reason other: the library's write method takes none.
+- **The reserved set.** A write to an object of a reserved type, to a
+  reserved property on any object, or to a replaced property, whose
+  pseudonyms must stay the shifter's, is refused with Error, class
+  property, code write-access-denied. A reserved service is refused with
+  service-request-denied, as the level refuses it anyway. The `reserved`
+  keys are data, so a site can add to them.
+- **The priority rule.** A write that names no priority goes out at 13; one
+  at 13 to 16 keeps its priority; one at 1 to 12 is refused with
+  write-access-denied, so that the consumer learns it rather than being
+  silently demoted. A relinquish, a Null value, follows the same rule. A
+  priority that is not 1 to 16 is refused with Reject,
+  parameter-out-of-range.
+- **Translation.** The object identifier is mapped to the real one, a
+  device object by its virtual instance, and so are the device identifiers
+  inside the value at any depth, by the rules reads use in the other
+  direction. A value that names a virtual device the shifter never issued,
+  or an address nobody is at, is refused with Error, class services, code
+  other: nothing is forwarded broken.
+
+What passes is sent once, never resent, and the consumer gets the site's
+SimpleACK, Error, Reject or Abort, or silence when the site was silent; a
+consumer's retry after silence is a new write. Every forwarded write is
+logged at `info` with the consumer's address, the device, the object, the
+property and the priority; one the library would not send, because the
+device was never switched writable or is denied, is logged at `warn` and
+answered service-request-denied.
+
+Test 8 of the spec runs twice. Against a fake in the place of the library
+client, each forwarded write reaches it at the right priority with the
+right value, each refused one never does, the consumer gets the documented
+answer, and the site's answers are injected one by one. Against the
+simulated site through the real client, a write with no priority arrives
+at 13 and one at 16 at 16, the consumer reads the value back, the refused
+ones never arrive, a device behind the site's router takes a write too,
+the site's own refusal comes back as it is, and a silent site gets exactly
+one datagram.
+
 ## Implementation notes
 
-Three points where the code is more specific than the spec:
+Four points where the code is more specific than the spec:
 
 - **Context-tagged device identifiers** in values are rewritten only when
   the instance is a device the table knows, or when the tag sits in the
@@ -230,6 +278,14 @@ Three points where the code is more specific than the spec:
   answered locally with unknown-object rather than passed to the site,
   so that a consumer cannot use a site device as an oracle for real
   instances.
+- **The site writer is an interface** of one method, `SiteWriter`, which
+  the library client fills and the tests replace with a fake to inject the
+  site's answers; the write path was built against the fake before the
+  library could send a write. A write whose value names a virtual device
+  the shifter never issued is refused rather than forwarded with the
+  consumer's instance in it; the spec says this for `god` and the code
+  does it at `full-service` too. A priority outside 1 to 16 is refused with
+  Reject parameter-out-of-range before anything is sent.
 
 The `internal/server` package is the station, dispatch and segmentation
 code of the library's `client/sim`, reshaped into a reusable server; it is

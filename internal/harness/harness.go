@@ -18,6 +18,7 @@ import (
 
 	"github.com/jonalfarlinga/bacnet/client"
 	"github.com/jonalfarlinga/bacnet/client/sim"
+	"github.com/jonalfarlinga/bacnet/objects"
 	"github.com/jonalfarlinga/bacnet/plumbing"
 
 	"github.com/jonalfarlinga/bacnet-shifter/internal/control"
@@ -73,6 +74,10 @@ type Options struct {
 	Logger  *slog.Logger
 	// WhoIsInterval, if set, replaces the shifter's default.
 	WhoIsInterval time.Duration
+	// Writer replaces the site client as the shifter's writer; nil keeps
+	// the client. The tests of the write path's translation and of the
+	// site's answers use a FakeWriter.
+	Writer shifter.SiteWriter
 }
 
 // Bench is a running site, shifter and consumer.
@@ -137,7 +142,7 @@ func Start(t *testing.T, opts Options) *Bench {
 			Local: netip.MustParseAddrPort("127.0.0.1:0"), Timeout: 500 * time.Millisecond, Retries: 1, OnPacket: b.ServerRec.OnPacket,
 		},
 		Control: opts.Control, Reserved: control.DefaultReserved(), Table: tb, Logger: opts.Logger,
-		WhoIsInterval: opts.WhoIsInterval,
+		WhoIsInterval: opts.WhoIsInterval, Writer: opts.Writer,
 	})
 	if err != nil {
 		network.Close()
@@ -288,6 +293,48 @@ func (b *Bench) Ctx() context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
 	b.t.Cleanup(cancel)
 	return ctx
+}
+
+// ---- the fake site writer --------------------------------------------------
+
+// WriteCall is one WriteProperty a FakeWriter was asked to send.
+type WriteCall struct {
+	To       client.Address
+	Object   client.ObjectID
+	Property uint16
+	Value    []*objects.Object
+	Priority uint8
+}
+
+// FakeWriter stands in for the library client's WriteProperty: it records
+// each call and answers with the error set, nil being the site's
+// SimpleACK.
+type FakeWriter struct {
+	mu    sync.Mutex
+	calls []WriteCall
+	err   error
+}
+
+// WriteProperty implements shifter.SiteWriter.
+func (f *FakeWriter) WriteProperty(_ context.Context, to client.Address, obj client.ObjectID, prop uint16, value []*objects.Object, priority uint8) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, WriteCall{To: to, Object: obj, Property: prop, Value: append([]*objects.Object(nil), value...), Priority: priority})
+	return f.err
+}
+
+// SetErr sets what every call returns from now on.
+func (f *FakeWriter) SetErr(err error) {
+	f.mu.Lock()
+	f.err = err
+	f.mu.Unlock()
+}
+
+// Calls is a copy of what was recorded.
+func (f *FakeWriter) Calls() []WriteCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]WriteCall(nil), f.calls...)
 }
 
 // ---- the raw sender --------------------------------------------------------

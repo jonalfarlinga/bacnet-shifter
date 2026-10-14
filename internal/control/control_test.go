@@ -98,6 +98,56 @@ func TestNames(t *testing.T) {
 	}
 }
 
+func u8(v uint8) *uint8 { return &v }
+
+// The write rules of §7.3 and §7.4, at each level: the priority rule, the
+// array index, the reserved objects and properties, the replaced
+// properties, and what god lifts.
+func TestWriteRules(t *testing.T) {
+	reserved := DefaultReserved()
+	replaced, _ := ParseReplaced(DefaultReplacedNames)
+	setpoint := objects.ObjectIdentifier{ObjectType: objects.ObjectTypeAnalogValue, InstanceNumber: 0}
+	alarms := objects.ObjectIdentifier{ObjectType: objects.ObjectTypeNotificationClass, InstanceNumber: 0}
+	pv, oos, name := uint32(objects.PropertyIdPresentValue), uint32(objects.PropertyIdOutOfService), uint32(objects.PropertyIdObjectName)
+
+	for _, tc := range []struct {
+		name     string
+		level    Level
+		w        Write
+		priority uint8
+		ans      Answer
+	}{
+		{"no-write refuses", NoWrite, Write{Object: setpoint, Property: pv}, 0, Denied},
+		{"limited refuses", Limited, Write{Object: setpoint, Property: pv}, 0, Denied},
+		{"none becomes 13", FullService, Write{Object: setpoint, Property: pv}, 13, Answer{Forward: true}},
+		{"13 is kept", FullService, Write{Object: setpoint, Property: pv, Priority: u8(13)}, 13, Answer{Forward: true}},
+		{"16 is kept", FullService, Write{Object: setpoint, Property: pv, Priority: u8(16)}, 16, Answer{Forward: true}},
+		{"12 is refused", FullService, Write{Object: setpoint, Property: pv, Priority: u8(12)}, 0, WriteDenied},
+		{"1 is refused", FullService, Write{Object: setpoint, Property: pv, Priority: u8(1)}, 0, WriteDenied},
+		{"0 is out of range", FullService, Write{Object: setpoint, Property: pv, Priority: u8(0)}, 0, RejectOutOfRange},
+		{"17 is out of range", FullService, Write{Object: setpoint, Property: pv, Priority: u8(17)}, 0, RejectOutOfRange},
+		{"an index is rejected", FullService, Write{Object: setpoint, Property: uint32(objects.PropertyIdPriorityArray), Indexed: true, Priority: u8(16)}, 0, RejectOther},
+		{"a reserved property", FullService, Write{Object: setpoint, Property: oos, Priority: u8(16)}, 0, WriteDenied},
+		{"a reserved object", FullService, Write{Object: alarms, Property: uint32(objects.PropertyIdPriority)}, 0, WriteDenied},
+		{"a replaced property", FullService, Write{Object: setpoint, Property: name}, 0, WriteDenied},
+		{"god keeps 8", God, Write{Object: setpoint, Property: pv, Priority: u8(8)}, 8, Answer{Forward: true}},
+		{"god sends none as none", God, Write{Object: setpoint, Property: pv}, 0, Answer{Forward: true}},
+		{"god lifts the reserved set", God, Write{Object: alarms, Property: oos, Priority: u8(1)}, 1, Answer{Forward: true}},
+		{"god refuses out of range too", God, Write{Object: setpoint, Property: pv, Priority: u8(17)}, 0, RejectOutOfRange},
+		{"god: an index waits for M4", God, Write{Object: setpoint, Property: pv, Indexed: true}, 0, RejectOther},
+		{"god: a rename waits for M4", God, Write{Object: setpoint, Property: name}, 0, WriteDenied},
+	} {
+		priority, ans := tc.level.Write(tc.w, reserved, replaced)
+		if priority != tc.priority || ans != tc.ans {
+			t.Errorf("%s: priority %d, %+v; want %d, %+v", tc.name, priority, ans, tc.priority, tc.ans)
+		}
+	}
+
+	if !FullService.ReservedService(27, reserved) || God.ReservedService(27, reserved) || FullService.ReservedService(15, reserved) {
+		t.Error("the reserved services apply at full-service and not at god")
+	}
+}
+
 func TestDefaults(t *testing.T) {
 	r := DefaultReserved()
 	if len(r.Services) != 10 || len(r.Objects) != 5 || len(r.Properties) != 10 {

@@ -330,6 +330,80 @@ func ParseReplaced(names []string) (map[uint32]bool, error) {
 	return set, nil
 }
 
+// ReservedService reports whether the level refuses a confirmed service for
+// being in the reserved set: full-service and below do, god does not.
+func (l Level) ReservedService(service uint8, r Reserved) bool {
+	return l < God && r.Services[service]
+}
+
+// ---- the write rules (§7.3, §7.4, §8.6) -----------------------------------
+
+// DefaultWritePriority is the priority a full-service write goes out at
+// when the consumer names none.
+const DefaultWritePriority uint8 = 13
+
+// RejectOutOfRange is the Reject for a priority that is not 1 to 16.
+var RejectOutOfRange = Answer{Reject: true, Reason: objects.RejectReasonParameterOutOfRange}
+
+// Write is a consumer's WriteProperty as the rules see it: the object and
+// property named, whether an array index was given, and the priority if
+// one was.
+type Write struct {
+	Object   objects.ObjectIdentifier
+	Property uint32
+	Indexed  bool
+	// Priority is nil when the request names none.
+	Priority *uint8
+}
+
+// Write applies the level's rules to a WriteProperty in the order of §8.6:
+// the level, the array-index rule, the reserved objects and properties and
+// the replaced properties, then the priority rule. It gives the priority
+// to send the write at, 0 for none, or the refusal.
+//
+// At full-service a write with no priority goes out at 13, one at 13 to 16
+// keeps its priority, and one at 1 to 12 is refused with
+// write-access-denied, a relinquish the same; an indexed write is refused
+// with Reject other, since the library's write method takes no index; a
+// write to a reserved object or property, or to a replaced property, with
+// write-access-denied. A priority that is not 1 to 16 is refused with
+// Reject parameter-out-of-range at every level, before anything is sent.
+//
+// At god the reserved set and the priority rule do not apply, and a write
+// with no priority is sent with none. The indexed write, which takes the
+// caller-encoded request (L3), and the write to a replaced property, which
+// records a rename, are M4's and are refused until then.
+func (l Level) Write(w Write, reserved Reserved, replaced map[uint32]bool) (priority uint8, ans Answer) {
+	if !l.Forwards(services.ServiceConfirmedWriteProperty) {
+		return 0, Denied
+	}
+	if w.Priority != nil && (*w.Priority == 0 || *w.Priority > 16) {
+		return 0, RejectOutOfRange
+	}
+	if w.Indexed {
+		return 0, RejectOther
+	}
+	if replaced[w.Property] {
+		return 0, WriteDenied
+	}
+	if l >= God {
+		if w.Priority == nil {
+			return 0, Answer{Forward: true}
+		}
+		return *w.Priority, Answer{Forward: true}
+	}
+	if reserved.Objects[w.Object.ObjectType] || reserved.Properties[w.Property] {
+		return 0, WriteDenied
+	}
+	switch {
+	case w.Priority == nil:
+		return DefaultWritePriority, Answer{Forward: true}
+	case *w.Priority < DefaultWritePriority:
+		return 0, WriteDenied
+	}
+	return *w.Priority, Answer{Forward: true}
+}
+
 // Sorted lists a set in order, for logs.
 func Sorted[T uint8 | uint16 | uint32](set map[T]bool) []T {
 	list := make([]T, 0, len(set))

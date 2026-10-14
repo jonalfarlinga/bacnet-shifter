@@ -53,6 +53,10 @@ type Config struct {
 	COVLifetime time.Duration
 	// MaxInFlightNet is the client's in-flight limit per routed network.
 	MaxInFlightNet int
+	// Writer sends the writes of full-service and god to the site; nil is
+	// the site client. The tests put a fake here to inject the site's
+	// answers.
+	Writer SiteWriter
 
 	// Consumer is the configuration of the consumer socket: Local,
 	// BindAny, Broadcast, Exclude, Timeout, Retries and OnPacket are the
@@ -81,6 +85,8 @@ type Shifter struct {
 	site  *client.Client
 	srv   *server.Server
 	rules translate.Rules
+	// writer sends the writes to the site (write.go).
+	writer SiteWriter
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -186,6 +192,10 @@ func Start(cfg Config) (*Shifter, error) {
 		return nil, fmt.Errorf("site client: %w", err)
 	}
 	s.site = site
+	s.writer = cfg.Writer
+	if s.writer == nil {
+		s.writer = site
+	}
 	s.log.Info("shifter started", "site", site.Local(), "consumer", srv.Local(), "control", cfg.Control, "network", s.table.V())
 
 	// A router announces itself and its networks when it comes up.
@@ -313,6 +323,15 @@ func (s *Shifter) discovered(dev client.Device) {
 	s.heard[dev.Instance] = true
 	s.mu.Unlock()
 	if first {
+		if s.cfg.Control >= control.FullService {
+			// The client's guard takes a write only to a device switched
+			// to writable; below full-service none is, so the guard still
+			// refuses whatever the dispatch did.
+			instance := dev.Instance
+			if err := s.site.SetWritable(client.SourceRule{Instance: &instance}, true); err != nil {
+				s.log.Error("the device could not be switched writable", "instance", dev.Instance, "error", err)
+			}
+		}
 		name, _ := s.table.Name(dev.Instance, obj)
 		s.log.Info("device", "real", dev.Instance, "name", name.Real, "address", dev.Addr,
 			"virtual", d.Virtual, "pseudonym", name.Pseudonym, "network", vnet, "mac", fmt.Sprintf("%04x", d.MAC), "new", seen.Created)
@@ -580,6 +599,10 @@ func (s *Shifter) Confirmed(req *server.Request) {
 		s.refuse(req, from, ans)
 		return
 	}
+	if s.cfg.Control.ReservedService(req.Service, s.cfg.Reserved) {
+		s.refuse(req, from, control.Denied)
+		return
+	}
 	switch req.Service {
 	case services.ServiceConfirmedReadProperty:
 		s.readProperty(req, from, dev)
@@ -589,6 +612,8 @@ func (s *Shifter) Confirmed(req *server.Request) {
 		s.readRange(req, from, dev)
 	case services.ServiceConfirmedSubscribeCOV:
 		s.subscribeCOV(req, from, dev)
+	case services.ServiceConfirmedWriteProperty:
+		s.writeProperty(req, from, dev)
 	default:
 		// A service the level forwards but this milestone does not build.
 		s.refuse(req, from, control.Denied)

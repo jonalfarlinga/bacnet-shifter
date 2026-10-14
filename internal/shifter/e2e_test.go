@@ -417,6 +417,8 @@ func TestGuardNoWrite(t *testing.T) { guardAt(t, control.NoWrite) }
 
 func TestGuardLimited(t *testing.T) { guardAt(t, control.Limited) }
 
+func TestGuardFullService(t *testing.T) { guardAt(t, control.FullService) }
+
 // What each level sends to the site, in the names sentSet gives.
 var levelList = map[control.Level][]string{
 	control.NoWrite: {
@@ -424,7 +426,8 @@ var levelList = map[control.Level][]string{
 		"confirmed read-range", "segment-ack", "abort", "network who-is-router-to-network",
 		"bvlc register-foreign-device", "bvlc read-foreign-device-table", "bvlc read-broadcast-distribution-table",
 	},
-	control.Limited: {"confirmed subscribe-cov", "simple-ack confirmed-cov-notification"},
+	control.Limited:     {"confirmed subscribe-cov", "simple-ack confirmed-cov-notification"},
+	control.FullService: {"confirmed write-property"},
 }
 
 func guardAt(t *testing.T, level control.Level) {
@@ -518,6 +521,20 @@ func guardAt(t *testing.T, level control.Level) {
 			t.Errorf("Cancel at %s: %v", level, err)
 		}
 		must = append(must, "confirmed subscribe-cov", "simple-ack confirmed-cov-notification")
+	}
+	if level >= control.FullService {
+		// A write the rules let through reaches the sim once, at 13, and
+		// the consumer gets the SimpleACK.
+		raw.Drain(t)
+		setpoint := client.ObjectID{Type: objects.ObjectTypeAnalogValue, Instance: 0}
+		got := raw.Exchange(t, to, npdu(), writeAPDU(200, setpoint, objects.PropertyIdPresentValue, nil, []objects.APDUPayload{objects.EncReal(56)}, nil), 2*time.Second)
+		if got == nil || got.APDU == nil || got.APDU.Type != plumbing.SimpleAck {
+			t.Errorf("a write at %s got %s, want SimpleACK", level, answer(got))
+		}
+		if writes := b.Sim.Writes(); len(writes) != 1 || writes[0].Priority != 13 || writes[0].Device != 1001 {
+			t.Errorf("the sim took %+v, want one write at 13 to device 1001", writes)
+		}
+		must = append(must, "confirmed write-property")
 	}
 
 	// What reached the site is exactly the level's list, and the services
