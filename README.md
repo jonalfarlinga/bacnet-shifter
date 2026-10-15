@@ -10,7 +10,10 @@ shifter and reads `AI-7c3e91ab0d42`, never `AHU1.OAT`.
 
 [docs/anonymizer-spec.md](docs/anonymizer-spec.md) says what the shifter
 does; [docs/build-plan.md](docs/build-plan.md) says in what order it is
-built. Milestones M1 and M2 are built: the `no-write` level, in which the
+built. [docs/threat-model.md](docs/threat-model.md) says what it protects,
+from whom, and which of those claims hold today;
+[docs/security-plan.md](docs/security-plan.md) says what is built, in what
+order, to make it a security boundary. Milestones M1 and M2 are built: the `no-write` level, in which the
 shifter forwards Who-Is, ReadProperty, ReadPropertyMultiple and ReadRange
 and nothing else, and the `limited` level, which adds change-of-value
 subscriptions.
