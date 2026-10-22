@@ -8,6 +8,10 @@ import (
 	"testing"
 	"time"
 
+	// The transition tests need America/Chicago, which Windows does not
+	// ship; the embedded database stands in.
+	_ "time/tzdata"
+
 	"github.com/jonalfarlinga/bacnet/client/sim"
 
 	"github.com/jonalfarlinga/bacnet-shifter/internal/control"
@@ -137,6 +141,52 @@ func TestSurveySchedule(t *testing.T) {
 	}
 	if next := shifter.NextAt(now, 90*time.Minute); !next.Equal(time.Date(2026, 10, 21, 1, 30, 0, 0, loc)) {
 		t.Errorf("at 01:30 the next 01:30 is %s, want tomorrow", next)
+	}
+}
+
+// The schedule across daylight-saving transitions, in America/Chicago: the
+// clock goes forward from 02:00 CST to 03:00 CDT on 2026-03-08, and back
+// from 02:00 CDT to 01:00 CST on 2026-11-01. The survey runs at the hour
+// the clock reads, not an elapsed number of hours after midnight; a time
+// the clock skips is run at the first instant after the skip; a time the
+// clock reads twice is run at the first reading, and once that day.
+func TestSurveyScheduleDST(t *testing.T) {
+	chicago, err := time.LoadLocation("America/Chicago")
+	if err != nil {
+		t.Fatal(err)
+	}
+	utc := func(month time.Month, day, hour, minute int) time.Time {
+		return time.Date(2026, month, day, hour, minute, 0, 0, time.UTC)
+	}
+	clock := func(hour, minute int) time.Duration {
+		return time.Duration(hour)*time.Hour + time.Duration(minute)*time.Minute
+	}
+	for _, tc := range []struct {
+		name string
+		now  time.Time
+		at   time.Duration
+		want time.Time
+	}{
+		// Spring forward. 03:00 CST = 09:00 UTC on the day before; 03:00
+		// CDT = 08:00 UTC on the day of.
+		{"spring: an hour after the skip is on the clock", utc(time.March, 8, 7, 0), clock(3, 30), utc(time.March, 8, 8, 30)},
+		{"spring: a time in the skip runs at its end", utc(time.March, 8, 7, 0), clock(2, 30), utc(time.March, 8, 8, 0)},
+		{"spring: the day before, the skipped time exists", utc(time.March, 7, 7, 0), clock(2, 30), utc(time.March, 7, 8, 30)},
+		{"spring: after it passes, tomorrow is at the skip's end", utc(time.March, 7, 9, 0), clock(2, 30), utc(time.March, 8, 8, 0)},
+		{"spring: a later hour is not shifted", utc(time.March, 8, 7, 0), clock(23, 0), utc(time.March, 9, 4, 0)},
+		// Fall back. 01:30 CDT = 06:30 UTC, then 01:30 CST = 07:30 UTC;
+		// 03:00 CST = 09:00 UTC.
+		{"autumn: the repeated time runs at its first reading", utc(time.November, 1, 5, 30), clock(1, 30), utc(time.November, 1, 6, 30)},
+		{"autumn: after the first reading, not the second", utc(time.November, 1, 6, 30), clock(1, 30), utc(time.November, 2, 7, 30)},
+		{"autumn: between the readings, still not the second", utc(time.November, 1, 7, 0), clock(1, 30), utc(time.November, 2, 7, 30)},
+		{"autumn: a later hour is on the clock, not 25 hours in", utc(time.November, 1, 5, 30), clock(3, 0), utc(time.November, 1, 9, 0)},
+		{"autumn: the day after is back to the standard offset", utc(time.November, 2, 5, 0), clock(2, 0), utc(time.November, 2, 8, 0)},
+	} {
+		got := shifter.NextAt(tc.now.In(chicago), tc.at)
+		if !got.Equal(tc.want) {
+			t.Errorf("%s: at %s the next %02d:%02d is %s, want %s", tc.name, tc.now.In(chicago).Format(time.RFC3339),
+				int(tc.at/time.Hour), int(tc.at%time.Hour/time.Minute), got.Format(time.RFC3339), tc.want.In(chicago).Format(time.RFC3339))
+		}
 	}
 }
 

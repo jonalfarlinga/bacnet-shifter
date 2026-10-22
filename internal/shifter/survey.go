@@ -81,15 +81,59 @@ func (sv *surveyor) loop() {
 	}
 }
 
-// NextAt is the next occurrence of a local time of day after now, today
-// or tomorrow.
+// NextAt is the next occurrence of a local time of day after now, today or
+// tomorrow, as the clock on the wall reads it. Across a daylight-saving
+// transition: a time the clock skips, in the spring, is run at the first
+// instant after the skip; a time the clock reads twice, in the autumn, is
+// run at the first of the two, and once that day.
 func NextAt(now time.Time, at time.Duration) time.Time {
-	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	next := day.Add(at)
+	hour, minute := int(at/time.Hour), int(at%time.Hour/time.Minute)
+	year, month, day := now.Date()
+	next := clockOn(year, month, day, hour, minute, now.Location())
 	if !next.After(now) {
-		next = day.AddDate(0, 0, 1).Add(at)
+		next = clockOn(year, month, day+1, hour, minute, now.Location())
 	}
 	return next
+}
+
+// clockOn is the instant on a calendar day when the local clock first
+// reads hour:minute, or, when it never does because the clock was put
+// forward over it, the first instant after the transition.
+func clockOn(year int, month time.Month, day, hour, minute int, loc *time.Location) time.Time {
+	t := time.Date(year, month, day, hour, minute, 0, 0, loc)
+	if t.Hour() != hour || t.Minute() != minute {
+		// The time does not exist on this day: time.Date landed on one
+		// side or the other of a transition, which is within a day of t
+		// and the only one there. Find the instant the offset changes.
+		lo, hi := t.Add(-24*time.Hour), t.Add(24*time.Hour)
+		_, before := lo.Zone()
+		for hi.Sub(lo) > time.Nanosecond {
+			mid := lo.Add(hi.Sub(lo) / 2)
+			if _, off := mid.Zone(); off == before {
+				lo = mid
+			} else {
+				hi = mid
+			}
+		}
+		return hi
+	}
+	// The clock may read the same time twice when it is put back: take the
+	// earlier reading. Transitions are of an hour, or half an hour in a
+	// few zones, and never more than two.
+	for _, back := range []time.Duration{2 * time.Hour, time.Hour, 30 * time.Minute} {
+		if earlier := t.Add(-back); sameClock(earlier, t) {
+			return earlier
+		}
+	}
+	return t
+}
+
+// sameClock reports whether two instants read the same on the wall clock,
+// to the minute.
+func sameClock(a, b time.Time) bool {
+	ay, am, ad := a.Date()
+	by, bm, bd := b.Date()
+	return ay == by && am == bm && ad == bd && a.Hour() == b.Hour() && a.Minute() == b.Minute()
 }
 
 // RunSurvey runs one survey now and feeds every BACnet device it found
