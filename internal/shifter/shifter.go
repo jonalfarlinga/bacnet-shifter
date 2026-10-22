@@ -25,6 +25,7 @@ import (
 
 	"github.com/jonalfarlinga/bacnet-shifter/internal/control"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/server"
+	"github.com/jonalfarlinga/bacnet-shifter/internal/survey"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/table"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/translate"
 )
@@ -53,10 +54,13 @@ type Config struct {
 	COVLifetime time.Duration
 	// MaxInFlightNet is the client's in-flight limit per routed network.
 	MaxInFlightNet int
-	// Writer sends the writes of full-service and god to the site; nil is
+	// Writer sends the writes of full-service to the site; nil is
 	// the site client. The tests put a fake here to inject the site's
 	// answers.
 	Writer SiteWriter
+	// Survey is the daily survey of the site's addresses (survey.go); nil
+	// runs none.
+	Survey *SurveyConfig
 
 	// Consumer is the configuration of the consumer socket: Local,
 	// BindAny, Broadcast, Exclude, Timeout, Retries and OnPacket are the
@@ -102,6 +106,8 @@ type Shifter struct {
 	// recent is when each consumer was last heard from.
 	recent    map[string]recentPeer
 	lastWhoIs time.Time
+	// surveying is the survey running now, which hears the I-Ams too.
+	surveying *survey.Survey
 }
 
 type recentPeer struct {
@@ -218,6 +224,7 @@ func Start(cfg Config) (*Shifter, error) {
 		defer s.wg.Done()
 		s.covSweeper()
 	}()
+	s.startSurveys()
 	return s, nil
 }
 
@@ -248,8 +255,15 @@ func (s *Shifter) Table() *table.Table { return s.table }
 
 // ---- the site side ---------------------------------------------------------
 
-// onIAm runs on the client's read loop and must not block.
+// onIAm runs on the client's read loop and must not block. A running
+// survey hears every I-Am too.
 func (s *Shifter) onIAm(dev client.Device) {
+	s.mu.Lock()
+	sv := s.surveying
+	s.mu.Unlock()
+	if sv != nil {
+		sv.Hear(dev)
+	}
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()

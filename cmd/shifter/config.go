@@ -14,6 +14,7 @@ import (
 	"github.com/jonalfarlinga/bacnet/client"
 
 	"github.com/jonalfarlinga/bacnet-shifter/internal/control"
+	"github.com/jonalfarlinga/bacnet-shifter/internal/survey"
 )
 
 // File is config.yaml (spec §10). Every key has a default; a key left out
@@ -45,7 +46,14 @@ type File struct {
 		Level  string `yaml:"level"`
 		Frames bool   `yaml:"frames"`
 	} `yaml:"log"`
-	Sim       string `yaml:"sim"`
+	Sim    string `yaml:"sim"`
+	Survey struct {
+		Enabled bool     `yaml:"enabled"`
+		At      string   `yaml:"at"`
+		OnStart bool     `yaml:"on_start"`
+		Ranges  []string `yaml:"ranges"`
+		Rate    float64  `yaml:"rate"`
+	} `yaml:"survey"`
 	Pseudonym struct {
 		Replaced []string `yaml:"replaced"`
 	} `yaml:"pseudonym"`
@@ -75,6 +83,9 @@ func Defaults() File {
 	f.Control = control.NoWrite.String()
 	f.Data = "data"
 	f.Log.Level = "info"
+	f.Survey.At = "02:00"
+	f.Survey.Ranges = []string{}
+	f.Survey.Rate = survey.DefaultPerSec
 	f.Pseudonym.Replaced = append([]string(nil), control.DefaultReplacedNames...)
 	f.Reserved.Services = append([]string(nil), control.DefaultReservedNames.Services...)
 	f.Reserved.Objects = append([]string(nil), control.DefaultReservedNames.Objects...)
@@ -136,6 +147,19 @@ func (f File) Validate() error {
 		if _, err := parseAddrPort(a, f.Site.Port); err != nil {
 			return fmt.Errorf("site.add: %w", err)
 		}
+	}
+	if _, err := survey.ParseClock(f.Survey.At); err != nil {
+		return fmt.Errorf("survey.at: %w", err)
+	}
+	if f.Survey.Rate <= 0 {
+		return errors.New("survey.rate must be above zero")
+	}
+	ranges, err := survey.ParseRangeList(f.Survey.Ranges)
+	if err != nil {
+		return fmt.Errorf("survey.ranges: %w", err)
+	}
+	if f.Survey.Enabled && f.Sim != "" && len(ranges) == 0 {
+		return errors.New("survey.ranges is required under sim: the simulated devices are on loopback, which has no subnet to survey")
 	}
 	if _, err := control.ParseReplaced(f.Pseudonym.Replaced); err != nil {
 		return err
@@ -234,8 +258,8 @@ func Render(f File) string {
 	line(1, "cov_max_lifetime", duration(f.Consumer.COVMaxLifetime), "ceiling on a consumer subscription's lifetime; 0 or absent in the request means this")
 	b.WriteString("\n")
 
-	b.WriteString("# What the shifter will send to the site: no-write | limited | full-service | god.\n")
-	b.WriteString("# Each level includes the ones before it. god prints a banner and logs every forwarded request.\n")
+	b.WriteString("# What the shifter will send to the site: no-write | limited | full-service.\n")
+	b.WriteString("# Each level includes the ones before it.\n")
 	line(0, "control", f.Control, "")
 	b.WriteString("\n")
 	b.WriteString("# Directory for the key and table.json. It must be readable by the shifter's account only.\n")
@@ -249,10 +273,21 @@ func Render(f File) string {
 	b.WriteString("# \"\" (off), default (sim.Start) or remote (sim.RemoteSite: a BBMD, a router and routed devices).\n")
 	line(0, "sim", quoted(f.Sim), "")
 	b.WriteString("\n")
+	b.WriteString("# A daily survey of the site's addresses, the bacnet-survey utility run through the site client: one read\n")
+	b.WriteString("# to each address, to find and announce the devices no Who-Is reaches. Results are logged, with no\n")
+	b.WriteString("# survey history saved. To the network it looks like a port scan\n")
+	b.WriteString("# of UDP 47808, and each vacant address on the subnet costs an ARP broadcast: tell whoever watches it.\n")
+	b.WriteString("survey:\n")
+	line(1, "enabled", fmt.Sprint(f.Survey.Enabled), "")
+	line(1, "at", quoted(f.Survey.At), "local time of day, HH:MM")
+	line(1, "on_start", fmt.Sprint(f.Survey.OnStart), "also run one when the shifter starts")
+	list(1, "ranges", f.Survey.Ranges, "addresses to survey instead of the whole subnet of site.adapter: 192.168.1.20-192.168.1.60, or one address; those beyond the subnet are pinged too; required under sim")
+	line(1, "rate", fmt.Sprint(f.Survey.Rate), "addresses tried in a second; a /24 takes half a minute at 10, a /16 two hours")
+	b.WriteString("\n")
 	b.WriteString("pseudonym:\n")
 	list(1, "replaced", f.Pseudonym.Replaced, "properties whose character-string values are replaced with pseudonyms, on every object")
 	b.WriteString("\n")
-	b.WriteString("# The life-safety and alarm set: refused at full-service, forwarded only by god.\n")
+	b.WriteString("# The life-safety and alarm set: refused at every level, full-service included.\n")
 	b.WriteString("reserved:\n")
 	list(1, "services", f.Reserved.Services, "")
 	list(1, "objects", f.Reserved.Objects, "")

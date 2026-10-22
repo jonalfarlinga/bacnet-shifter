@@ -13,11 +13,11 @@ Six packages, P1 to P6. The first two touch only the shifter. P3 to P5 add confi
 | **P1** | Robustness: bounds, reflection, recovery, fuzzing | O5, O6, O8; D1 to D8, S2, E4 | `internal/server`, `internal/shifter`, `internal/table`, config | none | none (§5.6 gains the limits) |
 | **P2** | Disclosure: the string allow list, hidden objects, the strict profile | O1; I2, I3, I4 | `internal/shifter`, `internal/control`, config, the leak test | none | §2, §6.5, §8.3 |
 | **P3** | Consumer identity: the tunnel, the allow list, per-consumer level | O3; S1, I10 (with the tunnel), R1 (the identity half) | `internal/server`, `internal/shifter`, config, README | none | §2, §5.1, §7 |
-| **P4** | Policy and audit: the write allow list, the audit log, `god` time-boxed | O2, O4; T2, T6, R1, R2, E2 | `internal/control`, `internal/shifter`, `cmd/shifter`, config | none | §7.3, §7.5, §11 |
+| **P4** | Policy and audit: the write allow list, the audit log | O2, O4; T2, T6, R1, R2 | `internal/control`, `internal/shifter`, `cmd/shifter`, config | none | §7.3, §11 |
 | **P5** | Host and secrets: start-up checks, key store, log mode, the deployment checklist | O7; I9, I11, T5, T6 | `cmd/shifter`, `internal/pseudonym`, README | none | §6.1, §11 |
 | **P6** | BACnet/SC on the consumer side | O3 the standard's way; I10 | the library, then `internal/server` | **L6** | §2, §5.1 |
 
-Order: P1, then P2, then P3, then P4; P5 at any point after P1, since it is independent; P6 after L4, as the next library milestone. §8 says why this order and how it sits with M4 and L4.
+Order: P1, then P2, then P3, then P4; P5 at any point after P1, since it is independent; P6 after L4, as the next library milestone. §8 says why this order and how it sits with L4.
 
 ## 2. P1 — Robustness
 
@@ -99,15 +99,15 @@ The operator runs an authenticated tunnel between each consumer and the shifter 
 
 ### 5.2 The audit log
 
-`audit.file`: a path; when set, every forwarded write, every refusal, every subscription made and cancelled, every change of level in effect (start, `god` begin and end) and every allow-list drop summary is appended as one JSON line: time in UTC, the peer's address and the prefix it matched, the level, the service, the virtual and the real device and object, the property, the index, the priority, the outcome (forwarded, the site's answer, or the refusal and its reason). The file is opened append-only (`O_APPEND`), written through a single goroutine, synced on each write, and never truncated by the shifter; rotation is the operator's, and the README says how. The audit line is in addition to the Info log, not instead of it. A test reads the file back after test 8 and checks each write has its line.
+`audit.file`: a path; when set, every forwarded write, every refusal, every subscription made and cancelled, the level in effect at start and every allow-list drop summary is appended as one JSON line: time in UTC, the peer's address and the prefix it matched, the level, the service, the virtual and the real device and object, the property, the index, the priority, the outcome (forwarded, the site's answer, or the refusal and its reason). The file is opened append-only (`O_APPEND`), written through a single goroutine, synced on each write, and never truncated by the shifter; rotation is the operator's, and the README says how. The audit line is in addition to the Info log, not instead of it. A test reads the file back after test 8 and checks each write has its line.
 
-### 5.3 `god`, time-boxed
+### 5.3 `god`
 
-Assuming decision 1(b): `control: god` is refused at start unless `god_until` is set to a time at most 24 hours ahead; at that time the shifter drops to `full-service` without restart, logs it at Warn and audits it. The banner names the end time. If decision 1(a) is taken instead, `god` is removed from the level parser in the security profile and M4 is cancelled; if 1(c), nothing changes here and the README says `god` is outside the security claims.
+Decision 1(a) was taken on 2026-10-20: `god` is gone from the level parser, the spec (§7.5) and the plan, and M4 and L3 are cancelled. Nothing is built here.
 
 ### 5.4 Gate
 
-Test 8 with the allow list; the audit test; spec §7.3, §7.5 and §11 revised; README's permissions table gains the allow-list row.
+Test 8 with the allow list; the audit test; spec §7.3 and §11 revised; README's permissions table gains the allow-list row.
 
 ## 6. P5 — Host and secrets
 
@@ -134,16 +134,16 @@ The site side stays BACnet/IP: the site is what it is. The sizing is weeks, not 
 
 ## 8. Order, gates and the milestones already planned
 
-1. **P1** first. No spec change, no library change, and it closes the threats that need the least discussion. It should land before M4, since `god` widens the attack surface that P1 bounds.
+1. **P1** first. No spec change, no library change, and it closes the threats that need the least discussion.
 2. **P2** second. Its spec revision reopens two non-goals and must be reviewed; the code is small once the spec says what passes.
-3. **Decision 1 on `god`** before M4 starts, since 1(a) cancels M4 and 1(b) changes its scope.
+3. **Decision 1 on `god`** was taken on 2026-10-20: (a), the level is dropped, and M4 and L3 with it.
 4. **P3** third. It is mostly operator setup and configuration; the code is the allow list and the per-peer level.
 5. **P4** fourth, since the audit log needs P3's identity to be worth anything, and the write allow list is the first thing a reviewer will ask for after identity.
 6. **P5** at any point after P1, in its own session: it touches `cmd/shifter` and the README and nothing the other packages change.
-7. **L4** (the server package into the library) stays where the build plan puts it, after M4, and it carries P1's server changes with it.
+7. **L4** (the server package into the library) stays where the build plan puts it, after M3, and it carries P1's server changes with it.
 8. **P6** after L4, as its own milestone.
 
-Versions are the user's: v0.4.0 is reserved for `god`, v0.5.0 for the server move. The packages above can be tagged as patch versions on the way, or P1 and P2 together as the first "hardened" minor; the plan does not decide it.
+Versions are the user's: v0.5.0 is reserved for the server move. The packages above can be tagged as patch versions on the way, or P1 and P2 together as the first "hardened" minor; the plan does not decide it.
 
 Every package ends as every milestone does: `go vet ./...` and `GOWORK=off go test ./...` clean, a README section, a spec revision where the package changed behaviour, and nothing uncommitted in `../bacnet` that the package made.
 
@@ -166,7 +166,6 @@ Every package ends as every milestone does: `go vet ./...` and `GOWORK=off go te
 | `consumer.peers` | P3 | `[]` | `{prefix, control}`; a level per consumer, never above `control` |
 | `writes.allow` | P4 | `[]` (nothing) | what `full-service` may write |
 | `audit.file` | P4 | `""` | append-only JSON lines of writes, refusals and level changes |
-| `god_until` | P4 | `""` | required with `control: god`; at most 24 h ahead |
 | `data.unchecked` | P5 | false | skip the data directory permission check |
 | `data.key_store` | P5 | `file` | `file`, `dpapi`, `keyring` |
 | `log.real_values` | P5 | true | `false` logs pseudonyms only |
@@ -190,7 +189,7 @@ Beyond the tests: **an external review** of the threat model and the code before
 
 ## 11. Decisions carried from the threat model
 
-1. The fate of `god` (threat model §12.1): the plan assumes (b), time-boxed.
+1. The fate of `god` (threat model §12.1): (a), taken on 2026-10-20; the level is removed.
 2. The strict profile (§12.2): included in P2 as `pseudonym.strict`, off by default.
 3. Identity by tunnel now, BACnet/SC later (§12.3): the plan assumes yes to both.
 4. `consumer.allow` empty means any source, with a Warn (§12.4).

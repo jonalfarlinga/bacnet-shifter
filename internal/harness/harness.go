@@ -78,6 +78,8 @@ type Options struct {
 	// the client. The tests of the write path's translation and of the
 	// site's answers use a FakeWriter.
 	Writer shifter.SiteWriter
+	// Survey, if set, is the shifter's survey configuration.
+	Survey *shifter.SurveyConfig
 }
 
 // Bench is a running site, shifter and consumer.
@@ -142,7 +144,7 @@ func Start(t *testing.T, opts Options) *Bench {
 			Local: netip.MustParseAddrPort("127.0.0.1:0"), Timeout: 500 * time.Millisecond, Retries: 1, OnPacket: b.ServerRec.OnPacket,
 		},
 		Control: opts.Control, Reserved: control.DefaultReserved(), Table: tb, Logger: opts.Logger,
-		WhoIsInterval: opts.WhoIsInterval, Writer: opts.Writer,
+		WhoIsInterval: opts.WhoIsInterval, Writer: opts.Writer, Survey: opts.Survey,
 	})
 	if err != nil {
 		network.Close()

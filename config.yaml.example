@@ -24,8 +24,8 @@ consumer:
   recent: 10m             # a new device or network is also announced by unicast to every consumer heard from within this long
   cov_max_lifetime: 24h   # ceiling on a consumer subscription's lifetime; 0 or absent in the request means this
 
-# What the shifter will send to the site: no-write | limited | full-service | god.
-# Each level includes the ones before it. god prints a banner and logs every forwarded request.
+# What the shifter will send to the site: no-write | limited | full-service.
+# Each level includes the ones before it.
 control: no-write
 
 # Directory for the key and table.json. It must be readable by the shifter's account only.
@@ -39,6 +39,17 @@ log:
 # "" (off), default (sim.Start) or remote (sim.RemoteSite: a BBMD, a router and routed devices).
 sim: ""
 
+# A daily survey of the site's addresses, the bacnet-survey utility run through the site client: one read
+# to each address, to find and announce the devices no Who-Is reaches. Results are logged, with no
+# survey history saved. To the network it looks like a port scan
+# of UDP 47808, and each vacant address on the subnet costs an ARP broadcast: tell whoever watches it.
+survey:
+  enabled: false
+  at: "02:00"             # local time of day, HH:MM
+  on_start: false         # also run one when the shifter starts
+  ranges: []              # addresses to survey instead of the whole subnet of site.adapter: 192.168.1.20-192.168.1.60, or one address; those beyond the subnet are pinged too; required under sim
+  rate: 10                # addresses tried in a second; a /24 takes half a minute at 10, a /16 two hours
+
 pseudonym:
   replaced:               # properties whose character-string values are replaced with pseudonyms, on every object
     - object-name
@@ -47,7 +58,7 @@ pseudonym:
     - model-name
     - serial-number
 
-# The life-safety and alarm set: refused at full-service, forwarded only by god.
+# The life-safety and alarm set: refused at every level, full-service included.
 reserved:
   services:
     - life-safety-operation

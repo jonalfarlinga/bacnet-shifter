@@ -1,4 +1,4 @@
-// Package control is the shifter's control level (spec §7): the four
+// Package control is the shifter's control level (spec §7): the three
 // levels, what each forwards to the site, the answer every other request
 // gets, and the names of the services, object types and properties that the
 // configuration speaks of.
@@ -25,14 +25,13 @@ const (
 	// Limited adds SubscribeCOV and CancelCOV.
 	Limited
 	// FullService adds WriteProperty at priority 13 to ordinary properties
-	// of ordinary objects.
+	// of ordinary objects. It is the highest level: no level forwards the
+	// reserved set, a write at priority 1 to 12, or any other confirmed
+	// service.
 	FullService
-	// God forwards every confirmed service the shifter can translate, at
-	// any priority.
-	God
 )
 
-var levelNames = []string{"no-write", "limited", "full-service", "god"}
+var levelNames = []string{"no-write", "limited", "full-service"}
 
 // Parse reads a level as the configuration names it.
 func Parse(s string) (Level, error) {
@@ -85,7 +84,8 @@ var (
 	// WriteDenied is the Error for a write the level or the reserved set
 	// refuses.
 	WriteDenied = Answer{Class: objects.ErrorClassProperty, Code: ErrorCodeWriteAccessDenied}
-	// Untranslatable is the Error for a payload god cannot translate.
+	// Untranslatable is the Error for a write whose value names a device
+	// or an address the shifter never issued.
 	Untranslatable = Answer{Class: objects.ErrorClassServices, Code: ErrorCodeOther}
 	// RejectOther is the Reject for a well-formed request the shifter does
 	// not split or forward: an indexed ReadPropertyMultiple, a range by
@@ -98,15 +98,6 @@ var forwarded = map[Level][]uint8{
 	NoWrite:     {services.ServiceConfirmedReadProperty, services.ServiceConfirmedReadPropMultiple, services.ServiceConfirmedReadRange},
 	Limited:     {services.ServiceConfirmedSubscribeCOV},
 	FullService: {services.ServiceConfirmedWriteProperty},
-	God: {
-		services.ServiceConfirmedAcknowledgeAlarm, services.ServiceConfirmedGetAlarmSummary, services.ServiceConfirmedGetEnrollmentSummary,
-		services.ServiceConfirmedAtomicReadFile, services.ServiceConfirmedAtomicWriteFile,
-		services.ServiceConfirmedAddListElement, services.ServiceConfirmedRemoveListElement,
-		services.ServiceConfirmedCreateObject, services.ServiceConfirmedDeleteObject,
-		services.ServiceConfirmedWritePropMultiple, services.ServiceConfirmedDeviceCommunicationControl,
-		services.ServiceConfirmedTextMessage, services.ServiceConfirmedReinitializeDevice,
-		ServiceConfirmedLifeSafetyOperation, ServiceConfirmedGetEventInformation,
-	},
 }
 
 // Forwards reports whether the level forwards a confirmed service, before
@@ -133,7 +124,7 @@ func Known(service uint8) bool {
 // code alone: forwarded, Reject unrecognized-service for an unknown one, or
 // Error service-request-denied for a known one the level does not forward.
 // The rules that look into the payload (the priority rule, the reserved
-// set, the translatable-payload check) come after it.
+// set, the translatable-value check) come after it.
 func (l Level) Confirmed(service uint8) Answer {
 	switch {
 	case !Known(service):
@@ -259,8 +250,8 @@ func ObjectTypeByName(name string) (uint16, error) {
 
 // ---- the reserved set ------------------------------------------------------
 
-// Reserved is the life-safety and alarm set (§7.4): refused at full-service
-// and forwarded only by god.
+// Reserved is the life-safety and alarm set (§7.4): refused at every
+// level, full-service included.
 type Reserved struct {
 	Services   map[uint8]bool
 	Objects    map[uint16]bool
@@ -330,10 +321,10 @@ func ParseReplaced(names []string) (map[uint32]bool, error) {
 	return set, nil
 }
 
-// ReservedService reports whether the level refuses a confirmed service for
-// being in the reserved set: full-service and below do, god does not.
+// ReservedService reports whether a confirmed service is refused for being
+// in the reserved set, which every level applies.
 func (l Level) ReservedService(service uint8, r Reserved) bool {
-	return l < God && r.Services[service]
+	return r.Services[service]
 }
 
 // ---- the write rules (§7.3, §7.4, §8.6) -----------------------------------
@@ -368,11 +359,6 @@ type Write struct {
 // write to a reserved object or property, or to a replaced property, with
 // write-access-denied. A priority that is not 1 to 16 is refused with
 // Reject parameter-out-of-range at every level, before anything is sent.
-//
-// At god the reserved set and the priority rule do not apply, and a write
-// with no priority is sent with none. The indexed write, which takes the
-// caller-encoded request (L3), and the write to a replaced property, which
-// records a rename, are M4's and are refused until then.
 func (l Level) Write(w Write, reserved Reserved, replaced map[uint32]bool) (priority uint8, ans Answer) {
 	if !l.Forwards(services.ServiceConfirmedWriteProperty) {
 		return 0, Denied
@@ -385,12 +371,6 @@ func (l Level) Write(w Write, reserved Reserved, replaced map[uint32]bool) (prio
 	}
 	if replaced[w.Property] {
 		return 0, WriteDenied
-	}
-	if l >= God {
-		if w.Priority == nil {
-			return 0, Answer{Forward: true}
-		}
-		return *w.Priority, Answer{Forward: true}
 	}
 	if reserved.Objects[w.Object.ObjectType] || reserved.Properties[w.Property] {
 		return 0, WriteDenied

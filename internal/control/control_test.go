@@ -15,7 +15,6 @@ func TestRefusalTable(t *testing.T) {
 		NoWrite:     {12, 14, 26},
 		Limited:     {12, 14, 26, 5},
 		FullService: {12, 14, 26, 5, 15},
-		God:         {12, 14, 26, 5, 15, 0, 3, 4, 6, 7, 8, 9, 10, 11, 16, 17, 19, 20, 27, 29},
 	}
 	for level, list := range forwardedAt {
 		want := map[uint8]bool{}
@@ -42,8 +41,8 @@ func TestRefusalTable(t *testing.T) {
 		}
 	}
 	for _, never := range []uint8{1, 2, 18, 28} {
-		if God.Confirmed(never).Forward {
-			t.Errorf("service %d is forwarded by god", never)
+		if FullService.Confirmed(never).Forward {
+			t.Errorf("service %d is forwarded by full-service", never)
 		}
 	}
 	for _, unknown := range []uint8{13, 21, 22, 23, 24, 25, 30, 31, 200, 255} {
@@ -54,14 +53,16 @@ func TestRefusalTable(t *testing.T) {
 }
 
 func TestLevelNames(t *testing.T) {
-	for _, name := range []string{"no-write", "limited", "full-service", "god"} {
+	for _, name := range []string{"no-write", "limited", "full-service"} {
 		l, err := Parse(name)
 		if err != nil || l.String() != name {
 			t.Errorf("%s: %v, %v", name, l, err)
 		}
 	}
-	if _, err := Parse("root"); err == nil {
-		t.Error("an unknown level was accepted")
+	for _, name := range []string{"root", "god"} {
+		if _, err := Parse(name); err == nil {
+			t.Errorf("%q was accepted as a level", name)
+		}
 	}
 }
 
@@ -101,8 +102,8 @@ func TestNames(t *testing.T) {
 func u8(v uint8) *uint8 { return &v }
 
 // The write rules of §7.3 and §7.4, at each level: the priority rule, the
-// array index, the reserved objects and properties, the replaced
-// properties, and what god lifts.
+// array index, the reserved objects and properties, and the replaced
+// properties.
 func TestWriteRules(t *testing.T) {
 	reserved := DefaultReserved()
 	replaced, _ := ParseReplaced(DefaultReplacedNames)
@@ -130,12 +131,7 @@ func TestWriteRules(t *testing.T) {
 		{"a reserved property", FullService, Write{Object: setpoint, Property: oos, Priority: u8(16)}, 0, WriteDenied},
 		{"a reserved object", FullService, Write{Object: alarms, Property: uint32(objects.PropertyIdPriority)}, 0, WriteDenied},
 		{"a replaced property", FullService, Write{Object: setpoint, Property: name}, 0, WriteDenied},
-		{"god keeps 8", God, Write{Object: setpoint, Property: pv, Priority: u8(8)}, 8, Answer{Forward: true}},
-		{"god sends none as none", God, Write{Object: setpoint, Property: pv}, 0, Answer{Forward: true}},
-		{"god lifts the reserved set", God, Write{Object: alarms, Property: oos, Priority: u8(1)}, 1, Answer{Forward: true}},
-		{"god refuses out of range too", God, Write{Object: setpoint, Property: pv, Priority: u8(17)}, 0, RejectOutOfRange},
-		{"god: an index waits for M4", God, Write{Object: setpoint, Property: pv, Indexed: true}, 0, RejectOther},
-		{"god: a rename waits for M4", God, Write{Object: setpoint, Property: name}, 0, WriteDenied},
+		{"a reserved object at 16", FullService, Write{Object: alarms, Property: oos, Priority: u8(16)}, 0, WriteDenied},
 	} {
 		priority, ans := tc.level.Write(tc.w, reserved, replaced)
 		if priority != tc.priority || ans != tc.ans {
@@ -143,8 +139,8 @@ func TestWriteRules(t *testing.T) {
 		}
 	}
 
-	if !FullService.ReservedService(27, reserved) || God.ReservedService(27, reserved) || FullService.ReservedService(15, reserved) {
-		t.Error("the reserved services apply at full-service and not at god")
+	if !FullService.ReservedService(27, reserved) || !NoWrite.ReservedService(27, reserved) || FullService.ReservedService(15, reserved) {
+		t.Error("the reserved services apply at every level")
 	}
 }
 

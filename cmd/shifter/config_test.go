@@ -49,8 +49,24 @@ func TestLoad(t *testing.T) {
 	if f.Site.Adapter != "Ethernet 3" || f.Site.Timeout.Seconds() != 5 || f.Site.Port != 47808 || f.Control != "limited" || len(f.Reserved.Services) != 10 {
 		t.Errorf("loaded %+v", f)
 	}
+	if f.Survey.Enabled || f.Survey.At != "02:00" || f.Survey.Rate != 10 || len(f.Survey.Ranges) != 0 {
+		t.Errorf("the survey defaults loaded as %+v", f.Survey)
+	}
 	if err := f.Validate(); err != nil {
 		t.Error(err)
+	}
+	// A survey under sim is fine with ranges, and on an adapter without.
+	if err := os.WriteFile(path, []byte("sim: default\nsurvey:\n  enabled: true\n  at: \"3:15\"\n  ranges: [127.0.0.1-127.0.0.3, 127.0.0.9]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := Load(path); err != nil || f.Validate() != nil || len(f.Survey.Ranges) != 2 {
+		t.Errorf("a survey of ranges under sim: %+v, %v", f.Survey, err)
+	}
+	if err := os.WriteFile(path, []byte("site:\n  adapter: Ethernet 3\nconsumer:\n  adapter: 10.0.0.1\nsurvey:\n  enabled: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := Load(path); err != nil || f.Validate() != nil {
+		t.Errorf("a survey of the whole subnet: %v", err)
 	}
 	for name, text := range map[string]string{
 		"bad level":    "sim: default\ncontrol: root\n",
@@ -59,6 +75,10 @@ func TestLoad(t *testing.T) {
 		"bad sim":      "sim: maybe\n",
 		"no adapter":   "site:\n  adapter: x\n",
 		"bad bbmd":     "sim: default\nsite:\n  bbmd: nowhere\n",
+		"bad clock":    "sim: default\nsurvey:\n  at: noon\n",
+		"bad rate":     "sim: default\nsurvey:\n  rate: 0\n",
+		"bad range":    "sim: default\nsurvey:\n  ranges: [192.168.1.60-192.168.1.20]\n",
+		"sim no range": "sim: default\nsurvey:\n  enabled: true\n",
 	} {
 		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
 			t.Fatal(err)

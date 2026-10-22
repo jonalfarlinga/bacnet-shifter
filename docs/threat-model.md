@@ -1,6 +1,6 @@
 # bacnet-shifter — Threat model
 
-Companion to [anonymizer-spec.md](anonymizer-spec.md), which says what the shifter does, and to [security-plan.md](security-plan.md), which says what is built to make it a security layer and in what order. This document says what the shifter protects, from whom, through which openings, and how each threat stands against the code as it is. It was written on 2026-10-15 against v0.3.0 (`b4402f5`), with milestones M1 to M3 built and M4 (`god`) not yet started, and every finding in §7 was checked in the code; the file and line are given where it helps.
+Companion to [anonymizer-spec.md](anonymizer-spec.md), which says what the shifter does, and to [security-plan.md](security-plan.md), which says what is built to make it a security layer and in what order. This document says what the shifter protects, from whom, through which openings, and how each threat stands against the code as it is. It was written on 2026-10-15 against v0.3.0 (`b4402f5`), with milestones M1 to M3 built and M4 (`god`) not yet started, and every finding in §7 was checked in the code; on 2026-10-20 `god` was dropped (decision 1(a), §12) and the rows that spoke of it were updated; the file and line are given where it helps.
 
 The one-sentence summary: the shifter is today a sound **disclosure control** with a well-built write guard, and it is **not yet a security boundary**, because nothing on the consumer side is authenticated and nothing bounds what a consumer, or anyone who can put a datagram on the consumer network, can make it do.
 
@@ -41,7 +41,7 @@ Data flows: a consumer's request is parsed, checked against the level, translate
 | A4 | **The de-anonymization secret**: the key and the table | Data directory | Read or copied by anyone but the shifter's account |
 | A5 | **The shifter's availability** | The host | Crashed, hung or starved by anything either side sends |
 | A6 | **The audit record**: who sent which write, and what was refused | The log | Missing, unattributable, or lost |
-| A7 | **The configuration**: the level, the adapters, the reserved set | `config.yaml` | Changed by anyone but the operator; set to `god` without anyone noticing |
+| A7 | **The configuration**: the level, the adapters, the reserved set | `config.yaml` | Changed by anyone but the operator; set to `full-service` without anyone noticing |
 
 A1 is what the shifter exists to protect. A2 and A3 are what it must not become a path to. A4 to A7 are what makes the first three hold.
 
@@ -73,7 +73,7 @@ A note on B1 and B2 sharing a host. On Windows each socket binds its adapter's o
 | **T2** | **An unauthenticated host on the consumer network** | Everything T1 can, plus forge the source address of any datagram, including a legitimate consumer's | The same, and to make the shifter reflect traffic at a victim |
 | **T3** | **A passive observer on the consumer network** | Read every datagram | A1 from what consumers see; the values consumers write |
 | **T4** | **A rogue site device**, or one taken over | Send any I-Am, reply or notification from any site address, at any rate; claim any instance | A5 (take the shifter down), A2 (have writes meant for another device delivered to it), A1 (nothing: it is on the site already) |
-| **T5** | **The operator, in error** | Set `control: god`; bind the wrong adapter; copy the data directory to the wrong place; ship the log | Nothing; the harm is the same |
+| **T5** | **The operator, in error** | Set `control: full-service` on a site meant to be read; bind the wrong adapter; copy the data directory to the wrong place; ship the log | Nothing; the harm is the same |
 | **T6** | **An attacker on the host** | Everything | Everything; out of scope, residual in §10 |
 
 T1 and T2 are the adversaries the plan is built around. T2 is T1 without the courtesy of a stable address, and the UDP transport makes T2 cheap: nothing today distinguishes them.
@@ -118,10 +118,10 @@ Each threat has an identifier by category (S spoofing, T tampering, R repudiatio
 |---|---|---|---|---|
 | T1 | A consumer below full-service changes site state. | Refused by the dispatch, and again by the library guard (`ReadOnly` at no-write; no device writable below full-service). Test 3 asserts the set of services that reach the site per level. | **held** | — |
 | T2 | At full-service, a consumer writes to any object and property of any device, at 13 to 16, outside the reserved set. That is the level's definition, and the exposure is the whole site minus a deny list. | By design. | **gap** (for a boundary) | P4 |
-| T3 | A write to a life-safety or alarm object, property or service. | Refused below god by the reserved set; the set is configuration. At god, forwarded. | **held** below god | decision 1, P4 |
-| T4 | A write that renames a site object and breaks the mapping. | Refused below god; at god, recorded as a rename. | **held** below god | — |
+| T3 | A write to a life-safety or alarm object, property or service. | Refused at every level by the reserved set; the set is configuration. | **held** | — |
+| T4 | A write that renames a site object and breaks the mapping. | Refused at every level. | **held** | — |
 | T5 | The table or the key is edited on the host: a device's address is redirected, a pseudonym forged. | Nothing checks the file's integrity. | **accepted** (Z2) | P5 |
-| T6 | `config.yaml` is edited to `god`, or to the wrong adapter. | The banner is printed at start; nothing else. | **partial** | P4, P5 |
+| T6 | `config.yaml` is edited to `full-service`, or to the wrong adapter. | The level is printed at start; nothing else. | **partial** | P4, P5 |
 
 ### 7.3 Repudiation
 
@@ -165,10 +165,10 @@ Each threat has an identifier by category (S spoofing, T tampering, R repudiatio
 | ID | Threat | Today | Standing | Plan |
 |---|---|---|---|---|
 | E1 | A bug in the dispatch lets a service through at a lower level. | The library guard refuses it independently; a guard refusal is logged at Error. Test 3 per level. | **held** | — |
-| E2 | `god` is in effect without anyone meaning it to be. | A banner at start; every forwarded god-only request logged at Warn. No time limit, no second condition. | **partial** | decision 1, P4 |
+| E2 | `god` is in effect without anyone meaning it to be. | The level no longer exists (decision 1(a), 2026-10-20); `full-service` is the ceiling. | **closed** | — |
 | E3 | A consumer registers as a foreign device, or sends a segmented request, or a BVLC function the server does not take. | NAK; Abort segmentation-not-supported; dropped. | **held** | — |
 | E4 | The site pushes state into the shifter: I-Ams create records and announcements (D5), notifications are fanned out, replies are parsed. A hostile site device can make the shifter broadcast on the consumer side. | Bounded only by `slots`. | **partial** | P1 |
-| E5 | A consumer's request names a device or an address the shifter never issued, inside a value, and it is forwarded broken. | Refused with Error class services, code other, at full-service and god. | **held** | — |
+| E5 | A consumer's request names a device or an address the shifter never issued, inside a value, and it is forwarded broken. | Refused with Error class services, code other, at full-service. | **held** | — |
 
 ## 8. What holds today
 
@@ -187,7 +187,7 @@ The claims the shifter is to make once the plan is done. Each is testable, and t
 | ID | Objective | Closes |
 |---|---|---|
 | **O1 Disclosure** | No site name, free text, device instance, address, network number, or address-bearing object reaches a consumer. What passes is an enumerated allow list, and the leak test scans for everything the site returned, not for a list. | I1, I2, I3 |
-| **O2 Integrity** | Below `full-service` no consumer changes site state. At `full-service` only the writes on a configured allow list, at priority 13 to 16, reach the site; the reserved set is never written below `god`; `god` is either absent from the security profile or time-boxed and audited. | T1, T2, T3, E2 |
+| **O2 Integrity** | Below `full-service` no consumer changes site state. At `full-service` only the writes on a configured allow list, at priority 13 to 16, reach the site; the reserved set is never written; there is no level above `full-service`. | T1, T2, T3, E2 |
 | **O3 Identity** | Only consumers the operator has admitted are served, over a path that authenticates them, and the level is per consumer, never above the global one. | S1, I10, R1 |
 | **O4 Attribution** | Every forwarded write, every refusal and every change of level is recorded, append-only, with the consumer's authenticated identity, the real and virtual object, the property, the priority and the outcome. | R1, R2 |
 | **O5 Site availability** | The load the shifter puts on the site is bounded whatever consumers do: requests a second, requests in flight, subscriptions per device and in total, Who-Is per interval, and the rate at which new devices are admitted. | D3, D7, E4 |
@@ -215,14 +215,14 @@ Taken on knowingly, and to be stated in the README once the plan is done:
 3. Both sides are BACnet/IP over UDP; MS/TP and BACnet/SC are not in v1 (spec §2). P6 changes this for the consumer side.
 4. Consumers are BACnet clients that tolerate Error, Reject, Abort and silence, as the standard requires of them.
 5. The operator reads the log, or ships it somewhere that is as trusted as the host.
-6. The host's clock is right: subscription lifetimes, the audit record and a time-boxed `god` depend on it.
+6. The host's clock is right: subscription lifetimes and the audit record depend on it.
 7. The library's parsers are correct on well-formed input and do not panic on malformed input where they are fuzzed; where they are not, the shifter's recovery (P1) catches it.
 
 ## 12. Decisions for review
 
 Taken by the user before the plan's packages start; the plan carries them.
 
-1. **The fate of `god`.** (a) Drop it from the security profile: the level does not exist in a build meant as a boundary. (b) Keep it, time-boxed: `control: god` needs a `god_until` timestamp in the near future, after which the shifter falls back to `full-service`, with the banner and an audit line at both ends. (c) Keep it as it is, outside the security claims. The plan assumes (b) until told otherwise.
+1. **The fate of `god`.** (a) Drop it from the security profile: the level does not exist in a build meant as a boundary. (b) Keep it, time-boxed: `control: god` needs a `god_until` timestamp in the near future, after which the shifter falls back to `full-service`, with the banner and an audit line at both ends. (c) Keep it as it is, outside the security claims. **Taken on 2026-10-20: (a).** The level is removed from the code and the spec (§7.5); M4 and L3 are cancelled.
 2. **A strict profile for fingerprinting (I4).** Whether to add a profile that sends a fixed vendor identifier in I-Ams and replaces vendor-name, firmware-revision and application-software-version like other text. The plan includes it as an optional key in P2.
 3. **How a consumer gets an identity (O3).** The plan proposes an authenticated tunnel with the consumer socket bound to the tunnel adapter and the tunnel's inner addresses as the allow list, with BACnet/SC as the standard's route later (P6). The choice of tunnel is the operator's; the shifter needs only an adapter name.
 4. **The default of the consumer allow list.** Empty meaning *any source, with a warning at start* keeps the first run working; empty meaning *no source* is the safer default and breaks the first run until the key is set. The plan proposes the first with a Warn line, and the README's checklist says to set it.

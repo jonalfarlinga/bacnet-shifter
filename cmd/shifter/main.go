@@ -34,14 +34,11 @@ import (
 	"github.com/jonalfarlinga/bacnet-shifter/internal/control"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/pseudonym"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/shifter"
+	"github.com/jonalfarlinga/bacnet-shifter/internal/survey"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/table"
 )
 
 const configFile = "config.yaml"
-
-const godBanner = `WARNING: control is god. Every confirmed service the shifter can translate is
-forwarded to the site at any priority, life-safety and alarm writes included.
-Every forwarded request is logged.`
 
 func main() {
 	flagTable := flag.Bool("table", false, "print the table, pseudonym and real side by side, and exit; a text after it keeps only the records that contain it")
@@ -95,9 +92,6 @@ func run(listTable bool, filter string) error {
 		return err
 	}
 	defer cleanup()
-	if cfg.Control == control.God {
-		fmt.Fprintln(os.Stderr, godBanner)
-	}
 	sh, err := shifter.Start(cfg)
 	if err != nil {
 		if inUse(err) {
@@ -154,6 +148,17 @@ func build(f File, logger *slog.Logger, tb *table.Table) (cfg shifter.Config, cl
 	cfg.Site.Timeout, cfg.Site.Retries, cfg.Site.MaxRequestsPerSec = f.Site.Timeout, f.Site.Retries, f.Site.MaxRPS
 	cfg.Consumer.Timeout, cfg.Consumer.Retries = f.Site.Timeout, f.Site.Retries
 
+	if f.Survey.Enabled {
+		sv := &shifter.SurveyConfig{PerSec: f.Survey.Rate, OnStart: f.Survey.OnStart}
+		if sv.At, err = survey.ParseClock(f.Survey.At); err != nil {
+			return cfg, cleanup, fmt.Errorf("survey.at: %w", err)
+		}
+		if sv.Ranges, err = survey.ParseRangeList(f.Survey.Ranges); err != nil {
+			return cfg, cleanup, fmt.Errorf("survey.ranges: %w", err)
+		}
+		cfg.Survey = sv
+	}
+
 	if f.Sim != "" {
 		stations := sim.Default()
 		if f.Sim == "remote" {
@@ -170,12 +175,20 @@ func build(f File, logger *slog.Logger, tb *table.Table) (cfg shifter.Config, cl
 			cfg.Site.ForeignDevice = &client.ForeignDeviceConfig{BBMD: network.Addr(), TTL: f.Site.BBMDTTL}
 		}
 		cfg.Consumer.Local = netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), f.Consumer.Port)
+		if cfg.Survey != nil {
+			// The simulated devices are all at 127.0.0.1, on the first
+			// station's port; nothing is this machine's own address.
+			cfg.Survey.Subnet, cfg.Survey.Port = netip.MustParsePrefix("127.0.0.0/8"), network.Addr().Port()
+		}
 	} else {
 		site, err := bindOn(f.Site.Adapter, f.Site.Port)
 		if err != nil {
 			return cfg, cleanup, fmt.Errorf("site.adapter: %w", err)
 		}
 		cfg.Site.Local, cfg.Site.BindAny, cfg.Site.Broadcast, cfg.Site.Exclude = site.Local, site.BindAny, site.Broadcast, site.Exclude
+		if cfg.Survey != nil {
+			cfg.Survey.Subnet, cfg.Survey.Local, cfg.Survey.Port = site.Subnet, site.Local.Addr(), f.Site.Port
+		}
 		if f.Site.BBMD != "" {
 			bbmd, _ := parseAddrPort(f.Site.BBMD, f.Site.Port)
 			cfg.Site.ForeignDevice = &client.ForeignDeviceConfig{BBMD: bbmd, TTL: f.Site.BBMDTTL}
@@ -197,12 +210,13 @@ func build(f File, logger *slog.Logger, tb *table.Table) (cfg shifter.Config, cl
 	return cfg, cleanup, nil
 }
 
-// binding is where one side binds and broadcasts.
+// binding is where one side binds and broadcasts, and the subnet it is on.
 type binding struct {
 	Local     netip.AddrPort
 	BindAny   bool
 	Broadcast netip.AddrPort
 	Exclude   []netip.Prefix
+	Subnet    netip.Prefix
 }
 
 // bindOn says where a side binds, by the client's rules for the adapter
@@ -211,14 +225,14 @@ type binding struct {
 func bindOn(adapter string, port uint16) (binding, error) {
 	adapter = strings.TrimSpace(adapter)
 	if ip, err := netip.ParseAddr(adapter); err == nil && ip.IsLoopback() {
-		return binding{Local: netip.AddrPortFrom(ip, port)}, nil
+		return binding{Local: netip.AddrPortFrom(ip, port), Subnet: netip.PrefixFrom(ip, 8)}, nil
 	}
 	ifc, err := client.FindInterface(adapter)
 	if err != nil {
 		return binding{}, err
 	}
 	c := ifc.Config(port)
-	return binding{Local: c.Local, BindAny: c.BindAny, Broadcast: c.Broadcast, Exclude: c.Exclude}, nil
+	return binding{Local: c.Local, BindAny: c.BindAny, Broadcast: c.Broadcast, Exclude: c.Exclude, Subnet: ifc.Addr}, nil
 }
 
 // frames logs every datagram in hex at debug.
