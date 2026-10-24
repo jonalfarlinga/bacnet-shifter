@@ -1,6 +1,6 @@
 # bacnet-shifter — Security plan
 
-Companion to [threat-model.md](threat-model.md), which says what the shifter protects and from whom, and to [build-plan.md](build-plan.md), whose rules this plan keeps: the library at `../bacnet` is changed as little and as late as possible, each library change is confirmed first and lands as its own commit, the spec is revised before code where behaviour changes, and each package starts on the user's word. This document says what is built to turn the shifter from a disclosure control into a security boundary, in what order, and how each piece is shown to work. Written 2026-10-15 against v0.3.0.
+Companion to [threat-model.md](threat-model.md), which says what the shifter protects: the library at `../bacnet` is changed as little and as late as possible, each library change is confirmed first and lands as its own commit, the spec is revised before code where behaviour changes, and each package starts on the user's word. This document says what is built to turn the shifter from a disclosure control into a security boundary, in what order, and how each piece is shown to work. Written 2026-10-15 against v0.3.0.
 
 The principle, in one line: **deny what has not been allowed**, on the strings that pass, on the writes that pass, and on who may talk to the shifter at all. Today the shifter replaces what it knows is identifying and refuses what it knows is dangerous; a boundary passes only what has been enumerated.
 
@@ -17,7 +17,7 @@ Six packages, P1 to P6. The first two touch only the shifter. P3 to P5 add confi
 | **P5** | Host and secrets: start-up checks, key store, log mode, the deployment checklist | O7; I9, I11, T5, T6 | `cmd/shifter`, `internal/pseudonym`, README | none | §6.1, §11 |
 | **P6** | BACnet/SC on the consumer side | O3 the standard's way; I10 | the library, then `internal/server` | **L6** | §2, §5.1 |
 
-Order: P1, then P2, then P3, then P4; P5 at any point after P1, since it is independent; P6 after L4, as the next library milestone. §8 says why this order and how it sits with L4.
+Order: P1, then P2, then P3, then P4; P5 at any point after P1, since it is independent; P6 as the next library milestone, L4 having been cancelled on 2026-10-22. §8 says why this order.
 
 ## 2. P1 — Robustness
 
@@ -123,10 +123,10 @@ Gate: a test for the permission check on each platform the CI runs; README secti
 
 The standard's answer to O3 and I10: BACnet Secure Connect (ASHRAE 135-2020, Clause AB) carries BACnet over WebSockets with TLS 1.3, mutual authentication by device certificates, and a hub that connects the nodes. With it the consumer side needs no tunnel: each consumer holds a certificate the operator issued, the shifter is a node (or the hub), and the allow list of P3 becomes the certificates' identities.
 
-It is a library project, **L6**, proposed here only in outline and designed when its turn comes, after L4:
+It is a library project, **L6**, proposed here only in outline and designed when its turn comes:
 
-1. In `../bacnet`, a `sc` transport package: the BVLC-SC codec, the WebSocket connection with TLS, the hub connection and the direct-connect option, VMAC addressing, the node's certificate handling.
-2. The server package (by then `client/server`) takes a transport interface, so that the consumer side can be BACnet/IP or BACnet/SC.
+1. In `../bacnet`, a `sc` transport package: the BVLC-SC codec, the WebSocket connection with TLS, the hub connection and the direct-connect option, VMAC addressing, the node's certificate handling, and the transport boundary the library's own roadmap needs for the client once a second transport exists.
+2. The shifter's `internal/server`, which stays in the shifter (L4 was cancelled on 2026-10-22), takes a transport through that boundary, so that the consumer side can be BACnet/IP or BACnet/SC.
 3. The shifter gains `consumer.transport: ip | sc` and the certificate paths; the per-consumer level of P3 keys on the certificate's subject instead of a prefix.
 4. The library's `sim` gains an SC hub for the tests.
 
@@ -140,10 +140,10 @@ The site side stays BACnet/IP: the site is what it is. The sizing is weeks, not 
 4. **P3** third. It is mostly operator setup and configuration; the code is the allow list and the per-peer level.
 5. **P4** fourth, since the audit log needs P3's identity to be worth anything, and the write allow list is the first thing a reviewer will ask for after identity.
 6. **P5** at any point after P1, in its own session: it touches `cmd/shifter` and the README and nothing the other packages change.
-7. **L4** (the server package into the library) stays where the build plan puts it, after M3, and it carries P1's server changes with it.
-8. **P6** after L4, as its own milestone.
+7. **L4** (the server package into the library) was cancelled on 2026-10-22: the library handles the plumbing, and `internal/server` stays in the shifter, where P1's server changes land.
+8. **P6** as its own milestone, the next library one.
 
-Versions are the user's: v0.5.0 is reserved for the server move. The packages above can be tagged as patch versions on the way, or P1 and P2 together as the first "hardened" minor; the plan does not decide it.
+Versions are the user's: the v0.5.0 once reserved for the server move is free again. The packages above can be tagged as patch versions on the way, or P1 and P2 together as the first "hardened" minor; the plan does not decide it.
 
 Every package ends as every milestone does: `go vet ./...` and `GOWORK=off go test ./...` clean, a README section, a spec revision where the package changed behaviour, and nothing uncommitted in `../bacnet` that the package made.
 

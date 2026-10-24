@@ -8,15 +8,15 @@ addresses and network numbers. The consumer, which may be YABE, the
 `bacnet` repository's explorer or a BMS, speaks ordinary BACnet/IP to the
 shifter and reads `AI-7c3e91ab0d42`, never `AHU1.OAT`.
 
-[docs/anonymizer-spec.md](docs/anonymizer-spec.md) says what the shifter
-does; [docs/build-plan.md](docs/build-plan.md) says in what order it is
-built. [docs/threat-model.md](docs/threat-model.md) says what it protects,
+This file says what the shifter does and how it is set up.
+[docs/threat-model.md](docs/threat-model.md) says what it protects,
 from whom, and which of those claims hold today;
 [docs/security-plan.md](docs/security-plan.md) says what is built, in what
-order, to make it a security boundary. Milestones M1 and M2 are built: the `no-write` level, in which the
+order, to make it a security boundary. Milestones M1 to M3 are built: the `no-write` level, in which the
 shifter forwards Who-Is, ReadProperty, ReadPropertyMultiple and ReadRange
-and nothing else, and the `limited` level, which adds change-of-value
-subscriptions.
+and nothing else; the `limited` level, which adds change-of-value
+subscriptions; and the `full-service` level, which adds WriteProperty under
+the rules in the permissions table below.
 
 The shifter is built on the released `bacnet` library, v0.5.0 or later,
 which `go.mod` requires like any other module. To develop against a
@@ -351,8 +351,10 @@ Four points where the code is more specific than the spec:
   Reject parameter-out-of-range before anything is sent.
 
 The `internal/server` package is the station, dispatch and segmentation
-code of the library's `client/sim`, reshaped into a reusable server; it is
-to move into the library as `client/server` once it has stopped changing.
+code of the library's `client/sim`, reshaped into the shifter's own server.
+It stays here: the library handles the plumbing, and its only server code
+is the `sim` fixture and the examples. A fix to the segmentation and send
+core the two copies share is checked against the other.
 
 ## Tests
 
@@ -362,7 +364,7 @@ go test ./...
 
 runs the unit tests of every package and, in `internal/shifter`, the
 end-to-end tests of the spec on loopback: the leak test, fidelity against a
-direct read of the simulated site, the guard test at `no-write`, stability
+direct read of the simulated site, the guard test at each level, stability
 across restarts, collisions, a site reached through a BBMD with routed
 devices behind a router, and the survey finding a simulated device that the
 shifter's Who-Is cannot reach. The `internal/survey` tests are the

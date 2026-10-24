@@ -1,6 +1,6 @@
 # bacnet-shifter — Threat model
 
-Companion to [anonymizer-spec.md](anonymizer-spec.md), which says what the shifter does, and to [security-plan.md](security-plan.md), which says what is built to make it a security layer and in what order. This document says what the shifter protects, from whom, through which openings, and how each threat stands against the code as it is. It was written on 2026-10-15 against v0.3.0 (`b4402f5`), with milestones M1 to M3 built and M4 (`god`) not yet started, and every finding in §7 was checked in the code; on 2026-10-20 `god` was dropped (decision 1(a), §12) and the rows that spoke of it were updated; the file and line are given where it helps.
+Companion to [security-plan.md](security-plan.md), which says what is built to make a security layer and in what order. This document says what the shifter protects, from whom, through which openings, and how each threat stands against the code as it is. It was written on 2026-10-15 against v0.3.0 (`b4402f5`), with milestones M1 to M3 built and M4 (`god`) not yet started, and every finding in §7 was checked in the code; on 2026-10-20 `god` was dropped (decision 1(a), §12) and the rows that spoke of it were updated; the file and line are given where it helps.
 
 The one-sentence summary: the shifter is today a sound **disclosure control** with a well-built write guard, and it is **not yet a security boundary**, because nothing on the consumer side is authenticated and nothing bounds what a consumer, or anyone who can put a datagram on the consumer network, can make it do.
 

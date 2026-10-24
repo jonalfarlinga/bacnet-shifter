@@ -1,8 +1,7 @@
 // shifter is a BACnet anonymizing proxy: it sits between a site's BACnet/IP
 // network and a consumer's, passes reads through, and replaces every name,
 // description, device instance, address and network number of the site
-// with a pseudonym on the way out. docs/anonymizer-spec.md says what it
-// does.
+// with a pseudonym on the way out. The README says what it does.
 //
 // It runs with no arguments and reads config.yaml from the directory it is
 // started in; when the file is absent it writes one with every key at its

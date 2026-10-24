@@ -15,8 +15,10 @@
 // consumer's network and MAC as the destination.
 //
 // The station, dispatch and segmentation code is copied from client/sim and
-// reshaped; it is to move into the library as client/server once it has
-// stopped changing (build plan, L4).
+// reshaped for the shifter. It stays here: the library handles the plumbing,
+// and its only server code is the sim fixture and the examples. A fix to the
+// segmentation and send core the two copies share is checked against the
+// other.
 package server
 
 import (
