@@ -275,7 +275,7 @@ every write.
 - **An object that takes no subscription** answers as the site did: the
   consumer gets the same Error, Reject or Abort.
 
-Test 4 of the spec covers this against the simulated site: the shared
+The end-to-end COV test covers this against the simulated site: the shared
 upstream subscription, the confirmed upgrade and its acknowledgements, the
 last cancellation and the shifter's close emptying the sim's subscriptions.
 
@@ -313,7 +313,7 @@ property and the priority; one the library would not send, because the
 device was never switched writable or is denied, is logged at `warn` and
 answered service-request-denied.
 
-Test 8 of the spec runs twice. Against a fake in the place of the library
+The write test runs twice. Against a fake in the place of the library
 client, each forwarded write reaches it at the right priority with the
 right value, each refused one never does, the consumer gets the documented
 answer, and the site's answers are injected one by one. Against the
@@ -325,13 +325,13 @@ one datagram.
 
 ## Implementation notes
 
-Four points where the code is more specific than the spec:
+Four points where the code is more specific than the rules above:
 
 - **Context-tagged device identifiers** in values are rewritten only when
   the instance is a device the table knows, or when the tag sits in the
   `[3]` slot of a device-object-property reference after an object `[0]`
-  and a property `[1]`. The spec's blanket rule for any four-byte context
-  tag of type device would also rewrite a context-tagged Time at two in the
+  and a property `[1]`. A blanket rule for any four-byte context tag of
+  type device would also rewrite a context-tagged Time at two in the
   morning, which encodes as `02 mm ss hh` and reads as a device identifier.
   Application-tagged device identifiers are rewritten wherever they are.
 - **The pending map** that drops a consumer's retransmission while the
@@ -363,8 +363,8 @@ go test ./...
 ```
 
 runs the unit tests of every package and, in `internal/shifter`, the
-end-to-end tests of the spec on loopback: the leak test, fidelity against a
-direct read of the simulated site, the guard test at each level, stability
+end-to-end tests on loopback: the leak test, fidelity against a direct read
+of the simulated site, the guard test at each level, stability
 across restarts, collisions, a site reached through a BBMD with routed
 devices behind a router, and the survey finding a simulated device that the
 shifter's Who-Is cannot reach. The `internal/survey` tests are the

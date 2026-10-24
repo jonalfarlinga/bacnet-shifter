@@ -1,7 +1,7 @@
 // Package table keeps table.json: every pseudonym the shifter has issued,
-// its real value, and when it was first seen (spec §6.3 and §6.4). It is
-// the reverse index the consumer side is answered from, the audit record,
-// and with the key, the de-anonymization secret.
+// its real value, and when it was first seen. It is the reverse index the
+// consumer side is answered from, the audit record, and with the key, the
+// de-anonymization secret.
 //
 // Four kinds of record are kept: a device (real instance and address,
 // virtual instance and MAC), a site network (real and virtual number), an

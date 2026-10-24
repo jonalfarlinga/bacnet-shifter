@@ -1,5 +1,5 @@
 // Package pseudonym derives the shifter's pseudonyms and keeps the key they
-// are derived under (spec §6.1 and §6.2).
+// are derived under.
 //
 // Every derivation is HMAC-SHA256 under a per-site secret of a label and the
 // real value's fields, so that a pseudonym is a pure function of the key and
@@ -99,8 +99,8 @@ func LoadOrCreate(path string) (k Key, created bool, err error) {
 	return k, true, nil
 }
 
-// Limits of the three numeric spaces, as the spec sets them: a device
-// instance is 0..4194302, a virtual MAC 1..65534, a virtual network 1..65534.
+// Limits of the three numeric spaces: a device instance is 0..4194302, a
+// virtual MAC 1..65534, a virtual network 1..65534.
 const (
 	Instances = 4194303
 	MACs      = 65534

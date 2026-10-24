@@ -1,7 +1,7 @@
-// Package control is the shifter's control level (spec §7): the three
-// levels, what each forwards to the site, the answer every other request
-// gets, and the names of the services, object types and properties that the
-// configuration speaks of.
+// Package control is the shifter's control level: the three levels, what
+// each forwards to the site, the answer every other request gets, and the
+// names of the services, object types and properties that the configuration
+// speaks of.
 package control
 
 import (
@@ -250,8 +250,8 @@ func ObjectTypeByName(name string) (uint16, error) {
 
 // ---- the reserved set ------------------------------------------------------
 
-// Reserved is the life-safety and alarm set (§7.4): refused at every
-// level, full-service included.
+// Reserved is the life-safety and alarm set: refused at every level,
+// full-service included.
 type Reserved struct {
 	Services   map[uint8]bool
 	Objects    map[uint16]bool
@@ -327,7 +327,7 @@ func (l Level) ReservedService(service uint8, r Reserved) bool {
 	return r.Services[service]
 }
 
-// ---- the write rules (§7.3, §7.4, §8.6) -----------------------------------
+// ---- the write rules ------------------------------------------------------
 
 // DefaultWritePriority is the priority a full-service write goes out at
 // when the consumer names none.
@@ -347,7 +347,7 @@ type Write struct {
 	Priority *uint8
 }
 
-// Write applies the level's rules to a WriteProperty in the order of §8.6:
+// Write applies the level's rules to a WriteProperty, in this order:
 // the level, the array-index rule, the reserved objects and properties and
 // the replaced properties, then the priority rule. It gives the priority
 // to send the write at, 0 for none, or the refusal.

@@ -1,6 +1,6 @@
 # bacnet-shifter — Security plan
 
-Companion to [threat-model.md](threat-model.md), which says what the shifter protects: the library at `../bacnet` is changed as little and as late as possible, each library change is confirmed first and lands as its own commit, the spec is revised before code where behaviour changes, and each package starts on the user's word. This document says what is built to turn the shifter from a disclosure control into a security boundary, in what order, and how each piece is shown to work. Written 2026-10-15 against v0.3.0.
+Companion to [threat-model.md](threat-model.md), which says what the shifter protects: the library at `../bacnet` is changed as little and as late as possible, each library change is confirmed first and lands as its own commit, the README's rules are revised before code where behaviour changes, and each package starts on the user's word. This document says what is built to turn the shifter from a disclosure control into a security boundary, in what order, and how each piece is shown to work. Written 2026-10-15 against v0.3.0.
 
 The principle, in one line: **deny what has not been allowed**, on the strings that pass, on the writes that pass, and on who may talk to the shifter at all. Today the shifter replaces what it knows is identifying and refuses what it knows is dangerous; a boundary passes only what has been enumerated.
 
@@ -8,14 +8,14 @@ The principle, in one line: **deny what has not been allowed**, on the strings t
 
 Six packages, P1 to P6. The first two touch only the shifter. P3 to P5 add configuration and a small amount of code. P6 is a library milestone. The objectives (O1 to O8) and threats (S, T, R, I, D, E) are the threat model's.
 
-| | Package | Closes | Touches | Library | Spec change |
+| | Package | Closes | Touches | Library | Rules revised |
 |---|---|---|---|---|---|
-| **P1** | Robustness: bounds, reflection, recovery, fuzzing | O5, O6, O8; D1 to D8, S2, E4 | `internal/server`, `internal/shifter`, `internal/table`, config | none | none (§5.6 gains the limits) |
-| **P2** | Disclosure: the string allow list, hidden objects, the strict profile | O1; I2, I3, I4 | `internal/shifter`, `internal/control`, config, the leak test | none | §2, §6.5, §8.3 |
-| **P3** | Consumer identity: the tunnel, the allow list, per-consumer level | O3; S1, I10 (with the tunnel), R1 (the identity half) | `internal/server`, `internal/shifter`, config, README | none | §2, §5.1, §7 |
-| **P4** | Policy and audit: the write allow list, the audit log | O2, O4; T2, T6, R1, R2 | `internal/control`, `internal/shifter`, `cmd/shifter`, config | none | §7.3, §11 |
-| **P5** | Host and secrets: start-up checks, key store, log mode, the deployment checklist | O7; I9, I11, T5, T6 | `cmd/shifter`, `internal/pseudonym`, README | none | §6.1, §11 |
-| **P6** | BACnet/SC on the consumer side | O3 the standard's way; I10 | the library, then `internal/server` | **L6** | §2, §5.1 |
+| **P1** | Robustness: bounds, reflection, recovery, fuzzing | O5, O6, O8; D1 to D8, S2, E4 | `internal/server`, `internal/shifter`, `internal/table`, config | none | none; the implementation notes gain the limits |
+| **P2** | Disclosure: the string allow list, hidden objects, the strict profile | O1; I2, I3, I4 | `internal/shifter`, `internal/control`, config, the leak test | none | the non-goals, the string rule, the refusals |
+| **P3** | Consumer identity: the tunnel, the allow list, per-consumer level | O3; S1, I10 (with the tunnel), R1 (the identity half) | `internal/server`, `internal/shifter`, config, README | none | the non-goals, the consumer side, the levels |
+| **P4** | Policy and audit: the write allow list, the audit log | O2, O4; T2, T6, R1, R2 | `internal/control`, `internal/shifter`, `cmd/shifter`, config | none | the write rules, the host |
+| **P5** | Host and secrets: start-up checks, key store, log mode, the deployment checklist | O7; I9, I11, T5, T6 | `cmd/shifter`, `internal/pseudonym`, README | none | the key, the host |
+| **P6** | BACnet/SC on the consumer side | O3 the standard's way; I10 | the library, then `internal/server` | **L6** | the non-goals, the consumer side |
 
 Order: P1, then P2, then P3, then P4; P5 at any point after P1, since it is independent; P6 as the next library milestone, L4 having been cancelled on 2026-10-22. §8 says why this order.
 
@@ -44,19 +44,19 @@ Everything in P1 is shifter-side and changes nothing a well-behaved consumer see
 - **A reflection test**: the bytes the shifter sends to one source in answer to a Who-Is burst are bounded by one I-Am per device per interval.
 - **A subscription test**: the caps refuse the subscription past the limit with the documented Error, and the site's subscription count never exceeds `site.max_subscriptions_per_device`.
 - **A site flood test**: the sim sends I-Ams for a thousand distinct instances in a burst; the table admits at most the configured rate, the file is written at most once a second, and the consumer side sees at most that many announcements.
-- The nine spec tests, the smoke test and the fuzzers green; `go vet` clean; `GOWORK=off go test ./...` against the released library.
+- The nine end-to-end tests, the smoke test and the fuzzers green; `go vet` clean; `GOWORK=off go test ./...` against the released library.
 - README: a section under the implementation notes listing what is bounded and by which key; `config.yaml.example` regenerated.
 
 ## 3. P2 — Disclosure
 
-Spec first, then code, as step 0 did. The spec revision is reviewed before any code.
+Rules first, then code. The revised rules below are reviewed before any code, and land in the README's permissions table and the package comments.
 
-### 3.1 The spec revision
+### 3.1 The rules
 
-- **§2**: remove the non-goal about free text outside the replaced list. Add the accepted residuals from threat model §10 (fingerprint, structure, timing, linkability) in their place, so the non-goals say what is knowingly left rather than what is unhandled.
-- **§6.5**: replace the deny list with an allow list. Every character string in every reply and notification is pseudonymized through the table, as names and the four text properties are today, with a per-property prefix (`p<id>-` for any property the table has no abbreviation for), **unless** its property is on `pseudonym.pass_through`, whose documented default is empty. The replaced list is retired; §15 and §16 record why.
-- **§6.5 and §8.3**: hidden objects. A read, subscription or write that names an object of a type on `pseudonym.hidden_objects` (default: `network-port`) is answered Error class object, code unknown-object, without asking the site; the type is left out of a device's object-list on the way down and out of every object-list-like property (structured-view subordinate-list, group member lists) by the same rule.
-- **§6.5**: the strict profile, `pseudonym.strict: false`. When true, I-Ams carry a fixed vendor identifier (0), and vendor-name, firmware-revision, application-software-version and protocol-revision strings go through the text rule like any other. Decision 2 of the threat model.
+- **The non-goals**: remove the one about free text outside the replaced list. Add the accepted residuals from threat model §10 (fingerprint, structure, timing, linkability) in their place, so the non-goals say what is knowingly left rather than what is unhandled.
+- **The string rule**: replace the deny list with an allow list. Every character string in every reply and notification is pseudonymized through the table, as names and the four text properties are today, with a per-property prefix (`p<id>-` for any property the table has no abbreviation for), **unless** its property is on `pseudonym.pass_through`, whose documented default is empty. The replaced list is retired; the threat model's I2 to I4 record why.
+- **Hidden objects**: a read, subscription or write that names an object of a type on `pseudonym.hidden_objects` (default: `network-port`) is answered Error class object, code unknown-object, without asking the site; the type is left out of a device's object-list on the way down and out of every object-list-like property (structured-view subordinate-list, group member lists) by the same rule.
+- **The strict profile**, `pseudonym.strict: false`. When true, I-Ams carry a fixed vendor identifier (0), and vendor-name, firmware-revision, application-software-version and protocol-revision strings go through the text rule like any other. Decision 2 of the threat model.
 
 ### 3.2 The code
 
@@ -89,13 +89,13 @@ The operator runs an authenticated tunnel between each consumer and the shifter 
 - The allow list: a source outside it gets nothing, inside it is served; the drop is counted.
 - Per-consumer level: two raw senders from two prefixes, one at `no-write` and one at `full-service` under a global `full-service`, get the documented answers for a write; a peer entry above the global level is a configuration error at start.
 - Test 3 runs per peer level.
-- Spec §2 drops the non-goal of consumer authentication and §7 gains the per-consumer rule; README setup covers the tunnel and the checklist.
+- The threat model drops the non-goal of consumer authentication; the README's permissions table gains the per-consumer rule and its setup section covers the tunnel and the checklist.
 
 ## 5. P4 — Policy and audit
 
 ### 5.1 The write allow list
 
-`writes.allow`: a list of entries, each with an object type, a property or `*`, and optionally a device (virtual instance or prefix of them) and a consumer prefix. At `full-service` a WriteProperty is forwarded only when an entry matches, after the reserved set and the priority rule, which stay as the floor. Default empty: nothing is writable until the operator lists it (decision 5). `control.Level.Write` takes the list as it takes the reserved set, and the order of §8.6 gains one step. Test 8 gains the allow-list cases.
+`writes.allow`: a list of entries, each with an object type, a property or `*`, and optionally a device (virtual instance or prefix of them) and a consumer prefix. At `full-service` a WriteProperty is forwarded only when an entry matches, after the reserved set and the priority rule, which stay as the floor. Default empty: nothing is writable until the operator lists it (decision 5). `control.Level.Write` takes the list as it takes the reserved set, and the order of the write rules gains one step. Test 8 gains the allow-list cases.
 
 ### 5.2 The audit log
 
@@ -103,11 +103,11 @@ The operator runs an authenticated tunnel between each consumer and the shifter 
 
 ### 5.3 `god`
 
-Decision 1(a) was taken on 2026-10-20: `god` is gone from the level parser, the spec (§7.5) and the plan, and M4 and L3 are cancelled. Nothing is built here.
+Decision 1(a) was taken on 2026-10-20: `god` is gone from the level parser, the README and the plan, and M4 and L3 are cancelled. Nothing is built here.
 
 ### 5.4 Gate
 
-Test 8 with the allow list; the audit test; spec §7.3 and §11 revised; README's permissions table gains the allow-list row.
+Test 8 with the allow list; the audit test; the README's write rules and operating notes revised, and its permissions table gains the allow-list row.
 
 ## 6. P5 — Host and secrets
 
@@ -117,7 +117,7 @@ Test 8 with the allow list; the audit test; spec §7.3 and §11 revised; README'
 - **The deployment checklist** in the README: a dedicated non-admin account; no other BACnet software on the host; IP forwarding off between adapters; firewall rules per adapter (site adapter: UDP 47808 to and from the site subnet and the BBMD only; consumer adapter or tunnel: UDP 47808 from `consumer.allow` only); the data directory's permissions; backups of the key and table encrypted and off the consumer side; log shipping only with `log.real_values: false` or to a host as trusted as this one.
 - **Incident guidance**: a key or table disclosure cannot be undone for data already stored by consumers; the response is a new key and an empty table, after which every consumer's stored names change, and the README says so plainly.
 
-Gate: a test for the permission check on each platform the CI runs; README sections; spec §6.1 and §11 revised.
+Gate: a test for the permission check on each platform the CI runs; README sections on the key store and the host checklist.
 
 ## 7. P6 — BACnet/SC on the consumer side (L6)
 
@@ -134,8 +134,8 @@ The site side stays BACnet/IP: the site is what it is. The sizing is weeks, not 
 
 ## 8. Order, gates and the milestones already planned
 
-1. **P1** first. No spec change, no library change, and it closes the threats that need the least discussion.
-2. **P2** second. Its spec revision reopens two non-goals and must be reviewed; the code is small once the spec says what passes.
+1. **P1** first. No change to the rules, no library change, and it closes the threats that need the least discussion.
+2. **P2** second. Its revision of the rules reopens two non-goals and must be reviewed; the code is small once the rules say what passes.
 3. **Decision 1 on `god`** was taken on 2026-10-20: (a), the level is dropped, and M4 and L3 with it.
 4. **P3** third. It is mostly operator setup and configuration; the code is the allow list and the per-peer level.
 5. **P4** fourth, since the audit log needs P3's identity to be worth anything, and the write allow list is the first thing a reviewer will ask for after identity.
@@ -145,7 +145,7 @@ The site side stays BACnet/IP: the site is what it is. The sizing is weeks, not 
 
 Versions are the user's: the v0.5.0 once reserved for the server move is free again. The packages above can be tagged as patch versions on the way, or P1 and P2 together as the first "hardened" minor; the plan does not decide it.
 
-Every package ends as every milestone does: `go vet ./...` and `GOWORK=off go test ./...` clean, a README section, a spec revision where the package changed behaviour, and nothing uncommitted in `../bacnet` that the package made.
+Every package ends as every milestone does: `go vet ./...` and `GOWORK=off go test ./...` clean, a README section, the README's rules revised where the package changed behaviour, and nothing uncommitted in `../bacnet` that the package made.
 
 ## 9. Configuration added, in one place
 

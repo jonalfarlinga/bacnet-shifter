@@ -17,8 +17,7 @@ import (
 	"github.com/jonalfarlinga/bacnet-shifter/internal/survey"
 )
 
-// File is config.yaml (spec §10). Every key has a default; a key left out
-// takes it.
+// File is config.yaml. Every key has a default; a key left out takes it.
 type File struct {
 	Site struct {
 		Adapter        string        `yaml:"adapter"`
@@ -200,8 +199,8 @@ func duration(d time.Duration) string {
 	return s
 }
 
-// Render writes the file with every key and a comment each, in the layout
-// of the spec. The repository's config.yaml.example is Render(Defaults()).
+// Render writes the file with every key and a comment each, section by
+// section. The repository's config.yaml.example is Render(Defaults()).
 func Render(f File) string {
 	var b strings.Builder
 	line := func(indent int, key, value, comment string) {

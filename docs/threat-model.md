@@ -137,15 +137,15 @@ Each threat has an identifier by category (S spoofing, T tampering, R repudiatio
 | I1 | Object names, descriptions, locations, model names, serial numbers, device instances, IP addresses, MACs and network numbers reach a consumer. | Replaced by rule and by the replaced list; test 1 scans every datagram on the consumer socket for each of them across tests 2, 4 and 7. | **held** | — |
 | I2 | Free text in any other property reaches a consumer: state-text, active-text, inactive-text, event-message-texts, profile-name, tags, Structured View annotations, the present-value of a CharacterString Value object, file names. On real sites these name rooms, tenants and equipment. The replaced list is a deny list; the leak test whitelists every pass-through string (`e2e_test.go`, `addPassThrough`), so it cannot see this. | Passes through; configurable per property, off by default. | **gap** | P2 |
 | I3 | Network Port objects (type 56) reach a consumer: ip-address, ip-subnet-mask, ip-default-gateway, mac-address, the BBMD tables, DNS servers, network-number. | Nothing handles the type; the sim has none, so no test sees it. | **gap** | P2 |
-| I4 | The equipment is fingerprinted: vendor-identifier in every I-Am, vendor-name, firmware-revision, application-software-version, protocol-services-supported, the object-list's shape. | Pass through by design (spec §6.5: they name the product, not the site). | **accepted**, or a strict profile | decision 2 |
-| I5 | The site's structure shows: non-device object instances, which sites often number by floor or zone; the nesting of networks; the count and types of objects per device. | Pass through by design (spec §2). | **accepted** | — |
-| I6 | Timing and traffic: which objects are read how often, COV cadence, the difference between a locally answered and a forwarded request. | Not hidden (spec §2). | **accepted** | — |
+| I4 | The equipment is fingerprinted: vendor-identifier in every I-Am, vendor-name, firmware-revision, application-software-version, protocol-services-supported, the object-list's shape. | Pass through by design: they name the product, not the site. | **accepted**, or a strict profile | decision 2 |
+| I5 | The site's structure shows: non-device object instances, which sites often number by floor or zone; the nesting of networks; the count and types of objects per device. | Pass through by design. | **accepted** | — |
+| I6 | Timing and traffic: which objects are read how often, COV cadence, the difference between a locally answered and a forwarded request. | Not hidden, by design. | **accepted** | — |
 | I7 | Pseudonyms are the same for every consumer and across time, so one consumer's stored data joins another's, and a table leaked from any context de-anonymizes all of them. | By design (goal 3: stable pseudonyms). | **accepted** | — |
 | I8 | A consumer uses the shifter as an oracle: Who-Has by a guessed real name; a read of a guessed real device instance. | Who-Has matches pseudonyms only; an unissued virtual instance is answered unknown-object locally and never sent to the site. | **held** | — |
-| I9 | The log discloses the site: at Info every device line carries the real name and address beside the pseudonym; `-table` prints everything. If the log is shipped off the host, it is the reverse table. | On the host, by design (spec §11). | **accepted** on the host; **gap** if shipped | P5 |
+| I9 | The log discloses the site: at Info every device line carries the real name and address beside the pseudonym; `-table` prints everything. If the log is shipped off the host, it is the reverse table. | On the host, by design. | **accepted** on the host; **gap** if shipped | P5 |
 | I10 | A passive observer on the consumer network reads what consumers read and what they write. | BACnet/IP is plaintext. The observer learns no more than a consumer about A1, and learns every written value. | **gap** | P3, P6 |
 | I11 | The key and table at rest are plaintext in a directory the program cannot lock on NTFS. | 0600 on the key; the README says to lock the directory. | **partial** | P5 |
-| I12 | The shifter's own address is visible on the site, in a BBMD's foreign device table and as the source of every request. | By design (spec §5.3). | **accepted** | — |
+| I12 | The shifter's own address is visible on the site, in a BBMD's foreign device table and as the source of every request. | By design. | **accepted** | — |
 
 ### 7.5 Denial of service
 
@@ -212,7 +212,7 @@ Taken on knowingly, and to be stated in the README once the plan is done:
 
 1. The host is administered by the operator, runs nothing else that speaks BACnet, and is not reachable from the consumer network except on the consumer socket's port.
 2. The site network and the consumer network are separate, and the shifter is the only path between them. The host does not forward IP between its adapters (on Windows `IPEnableRouter` is 0, the default; on Linux `ip_forward` is 0).
-3. Both sides are BACnet/IP over UDP; MS/TP and BACnet/SC are not in v1 (spec §2). P6 changes this for the consumer side.
+3. Both sides are BACnet/IP over UDP; MS/TP and BACnet/SC are not in v1. P6 changes this for the consumer side.
 4. Consumers are BACnet clients that tolerate Error, Reject, Abort and silence, as the standard requires of them.
 5. The operator reads the log, or ships it somewhere that is as trusted as the host.
 6. The host's clock is right: subscription lifetimes and the audit record depend on it.
@@ -222,7 +222,7 @@ Taken on knowingly, and to be stated in the README once the plan is done:
 
 Taken by the user before the plan's packages start; the plan carries them.
 
-1. **The fate of `god`.** (a) Drop it from the security profile: the level does not exist in a build meant as a boundary. (b) Keep it, time-boxed: `control: god` needs a `god_until` timestamp in the near future, after which the shifter falls back to `full-service`, with the banner and an audit line at both ends. (c) Keep it as it is, outside the security claims. **Taken on 2026-10-20: (a).** The level is removed from the code and the spec (§7.5); M4 and L3 are cancelled.
+1. **The fate of `god`.** (a) Drop it from the security profile: the level does not exist in a build meant as a boundary. (b) Keep it, time-boxed: `control: god` needs a `god_until` timestamp in the near future, after which the shifter falls back to `full-service`, with the banner and an audit line at both ends. (c) Keep it as it is, outside the security claims. **Taken on 2026-10-20: (a).** The level is removed from the code and the README; M4 and L3 are cancelled.
 2. **A strict profile for fingerprinting (I4).** Whether to add a profile that sends a fixed vendor identifier in I-Ams and replaces vendor-name, firmware-revision and application-software-version like other text. The plan includes it as an optional key in P2.
 3. **How a consumer gets an identity (O3).** The plan proposes an authenticated tunnel with the consumer socket bound to the tunnel adapter and the tunnel's inner addresses as the allow list, with BACnet/SC as the standard's route later (P6). The choice of tunnel is the operator's; the shifter needs only an adapter name.
 4. **The default of the consumer allow list.** Empty meaning *any source, with a warning at start* keeps the first run working; empty meaning *no source* is the safer default and breaks the first run until the key is set. The plan proposes the first with a Warn line, and the README's checklist says to set it.

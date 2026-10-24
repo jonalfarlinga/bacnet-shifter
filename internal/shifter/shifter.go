@@ -1,5 +1,5 @@
 // Package shifter is the proxy: the site client, discovery, the consumer
-// dispatch, and the translation between them (spec §5, §8 and §9).
+// dispatch, and the translation between them.
 //
 // The site side is the library's client, opened read-only under no-write.
 // Every I-Am it hears gives the device its pseudonyms in the table, one
@@ -654,7 +654,7 @@ func (s *Shifter) refuse(req *server.Request, from server.Source, ans control.An
 	req.Error(from, uint32(ans.Class), uint32(ans.Code))
 }
 
-// fault answers a request as the site's outcome says (§8.3).
+// fault answers a request as the site's outcome says.
 func (s *Shifter) fault(req *server.Request, from server.Source, err error) {
 	var (
 		be *client.BACnetError

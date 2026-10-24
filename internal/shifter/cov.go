@@ -16,7 +16,7 @@ import (
 	"github.com/jonalfarlinga/bacnet-shifter/internal/table"
 )
 
-// The COV fan-out (spec §8.5): one upstream subscription per site object,
+// The COV fan-out: one upstream subscription per site object,
 // shared by every consumer that subscribed to it, confirmed upstream when
 // any of them asked for confirmed. Each consumer's process ID and lifetime
 // are kept here, on the consumer side; every notification from the site is

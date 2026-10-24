@@ -1,7 +1,7 @@
 // Package translate turns the library's decoded values back into tags, and
 // rewrites what identifies the site in values on their way to the consumer:
 // device object identifiers wherever they appear, addresses, and the
-// replaced string properties (spec §6.5, §6.6 and §9.4).
+// replaced string properties.
 //
 // Device identifiers are rewritten by rule, not by property: every
 // application-tagged object identifier of type device is mapped, at any
@@ -10,9 +10,9 @@
 // them, so it is mapped only when its instance is a device the table knows,
 // or when it sits where a device identifier sits by schema: the [3] of a
 // BACnetDeviceObjectPropertyReference, after an object [0] and a property
-// [1]. That is the one deviation from the spec's blanket rule, and the
-// reason is that a timestamp [0] 02:15:00.00 encodes as 02 0F 00 00, which
-// reads as device object 983040.
+// [1]. That is narrower than a blanket rule for every four-byte context tag
+// of type device, because a timestamp [0] 02:15:00.00 encodes as
+// 02 0F 00 00, which reads as device object 983040.
 package translate
 
 import (

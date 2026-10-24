@@ -1,9 +1,8 @@
 // Package harness runs the simulated site, the shifter and a consumer on
-// loopback for the tests (spec §12): client/sim as the site, the shifter
-// with both sockets on 127.0.0.1, a client.Client as the consumer with the
-// shifter's consumer address as its broadcast, recorders on every socket,
-// and a raw sender for the services the consumer client's guard will not
-// send.
+// loopback for the tests: client/sim as the site, the shifter with both
+// sockets on 127.0.0.1, a client.Client as the consumer with the shifter's
+// consumer address as its broadcast, recorders on every socket, and a raw
+// sender for the services the consumer client's guard will not send.
 package harness
 
 import (

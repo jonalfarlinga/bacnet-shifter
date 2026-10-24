@@ -1,4 +1,4 @@
-// Package server is the shifter's consumer-facing socket (spec §5.4): it
+// Package server is the shifter's consumer-facing socket: it
 // parses what consumers send, hands each request to a handler, and offers
 // the handler what a BACnet server needs to answer: a reply with the
 // consumer's invoke ID, segmented to the consumer's max APDU; an Error,

@@ -11,7 +11,7 @@ import (
 	"github.com/jonalfarlinga/bacnet-shifter/internal/survey"
 )
 
-// SurveyConfig is the daily survey of the site's addresses (spec §9.2): the
+// SurveyConfig is the daily survey of the site's addresses: the
 // bacnet-survey utility run through the shifter's own site client, so that
 // devices no Who-Is reaches are found and announced. It is off when nil.
 type SurveyConfig struct {

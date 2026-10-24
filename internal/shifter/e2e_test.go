@@ -743,7 +743,7 @@ func TestRemoteSite(t *testing.T) {
 	checkLeak(t, b.ServerRec.Events(), secrets{bytes: [][]byte{{0x07, 0xD1, 0x01, 0x05}, {0x07, 0xD1, 0x01, 0x06}}, strings: [][]byte{[]byte("BBMD-1"), []byte("VAV-2-01")}})
 }
 
-// ---- Who-Has and the refusals of §8 ----------------------------------------
+// ---- Who-Has and the refusals ----------------------------------------------
 
 func TestWhoHasAndRefusals(t *testing.T) {
 	b := harness.Start(t, harness.Options{})

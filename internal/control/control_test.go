@@ -101,9 +101,8 @@ func TestNames(t *testing.T) {
 
 func u8(v uint8) *uint8 { return &v }
 
-// The write rules of §7.3 and §7.4, at each level: the priority rule, the
-// array index, the reserved objects and properties, and the replaced
-// properties.
+// The write rules at each level: the priority rule, the array index, the
+// reserved objects and properties, and the replaced properties.
 func TestWriteRules(t *testing.T) {
 	reserved := DefaultReserved()
 	replaced, _ := ParseReplaced(DefaultReplacedNames)

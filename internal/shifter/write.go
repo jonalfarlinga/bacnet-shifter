@@ -163,7 +163,7 @@ func objectName(id objects.ObjectIdentifier) string {
 	return fmt.Sprintf("%s %d", objects.ObjectTypeName(id.ObjectType), id.InstanceNumber)
 }
 
-// writeProperty applies the rules of §7.3 and §7.4 to a consumer's
+// writeProperty applies the level's write rules to a consumer's
 // WriteProperty, translates what passes and sends it through the site
 // writer. The consumer gets the site's SimpleACK, Error, Reject, Abort or
 // silence, as for a read; a write is never resent, so its retry after
