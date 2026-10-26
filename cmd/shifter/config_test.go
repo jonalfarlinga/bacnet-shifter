@@ -70,7 +70,8 @@ func TestLoad(t *testing.T) {
 	}
 	for name, text := range map[string]string{
 		"bad level":    "sim: default\ncontrol: root\n",
-		"bad property": "sim: default\npseudonym:\n  replaced: [no-such-thing]\n",
+		"bad property": "sim: default\npseudonym:\n  pass_through: [no-such-thing]\n",
+		"bad hidden":   "sim: default\npseudonym:\n  hidden_objects: [no-such-type]\n",
 		"bad service":  "sim: default\nreserved:\n  services: [who-is]\n",
 		"bad sim":      "sim: maybe\n",
 		"no adapter":   "site:\n  adapter: x\n",

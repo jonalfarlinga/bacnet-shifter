@@ -97,8 +97,14 @@ type Config struct {
 
 	Control  control.Level
 	Reserved control.Reserved
-	// Replaced is the properties whose string values are replaced.
-	Replaced map[uint32]bool
+	// PassThrough is the properties whose character strings cross as they
+	// are; every other string is replaced. Hidden is the object types that
+	// do not exist on the consumer side; nil is control.DefaultHidden.
+	// Strict replaces the version strings too and sends vendor identifier
+	// 0.
+	PassThrough map[uint32]bool
+	Hidden      map[uint16]bool
+	Strict      bool
 	// Table is the open table, which carries V.
 	Table  *table.Table
 	Logger *slog.Logger
@@ -138,6 +144,11 @@ type Shifter struct {
 	// heard is the devices announced this run.
 	heard     map[uint32]bool
 	lastWhoIs time.Time
+	// objectLists is each device's object list with the hidden objects
+	// left out, as read from the site within objectListTTL: an indexed
+	// read of the list is answered from it, so that the count and the
+	// elements agree.
+	objectLists map[uint32]objectList
 	// surveying is the survey running now, which hears the I-Ams too.
 	surveying *survey.Survey
 	// dropped counts the I-Ams not admitted and the moves refused.
@@ -147,6 +158,15 @@ type Shifter struct {
 type recentPeer struct {
 	peer server.Peer
 	at   time.Time
+}
+
+// objectListTTL is how long a device's object list is answered from the
+// last read of it.
+const objectListTTL = 30 * time.Second
+
+type objectList struct {
+	ids []client.ObjectID
+	at  time.Time
 }
 
 // admission is the token bucket new devices are admitted through: a
@@ -203,11 +223,8 @@ func Start(cfg Config) (*Shifter, error) {
 	if cfg.MaxInFlightNet <= 0 {
 		cfg.MaxInFlightNet = client.DefaultMaxInFlightNet
 	}
-	if cfg.Replaced == nil {
-		var err error
-		if cfg.Replaced, err = control.ParseReplaced(control.DefaultReplacedNames); err != nil {
-			return nil, err
-		}
+	if cfg.Hidden == nil {
+		cfg.Hidden = control.DefaultHidden()
 	}
 	if cfg.MaxSubscriptionsPerSource <= 0 {
 		cfg.MaxSubscriptionsPerSource = DefaultMaxSubscriptionsPerSource
@@ -236,6 +253,7 @@ func Start(cfg Config) (*Shifter, error) {
 		cfg: cfg, log: cfg.Logger, table: cfg.Table,
 		slots:          make(chan struct{}, 4),
 		heard:          map[uint32]bool{},
+		objectLists:    map[uint32]objectList{},
 		recent:         server.NewBounded[recentPeer](cfg.Consumer.MaxSources),
 		whoIsAnswered:  server.NewBounded[time.Time](cfg.Consumer.MaxSources),
 		cov:            newCOVState(cfg.MaxSubscriptionsPerSource, cfg.MaxSubscriptionsPerDevice, cfg.MaxSubscriptions, cfg.Consumer.MaxSources),
@@ -533,7 +551,22 @@ func (s *Shifter) iAm(d table.Device) []objects.APDUPayload {
 	case 2:
 		seg = 3 // receive: none
 	}
-	return services.IAmObjects(d.Virtual, maxAPDU, seg, d.VendorID)
+	vendor := d.VendorID
+	if s.cfg.Strict {
+		vendor = 0
+	}
+	return services.IAmObjects(d.Virtual, maxAPDU, seg, vendor)
+}
+
+// hidden reports whether an object is of a type that does not exist on
+// the consumer side.
+func (s *Shifter) hidden(id objects.ObjectIdentifier) bool { return s.cfg.Hidden[id.ObjectType] }
+
+// refuseHidden answers a request naming a hidden object as one naming no
+// object at all, and logs it: the consumer must not learn the type exists.
+func (s *Shifter) refuseHidden(req *server.Request, from server.Source, id objects.ObjectIdentifier) {
+	s.log.Info("refused a request for a hidden object", "from", req.Peer, "service", control.ServiceName(req.Service), "object", objectName(id))
+	req.Error(from, uint32(objects.ErrorClassObject), uint32(control.ErrorCodeUnknownObject))
 }
 
 // announce tells the consumer side of a device: one routed I-Am, broadcast
@@ -750,6 +783,9 @@ func (s *Shifter) whoHas(env server.Envelope, apdu *plumbing.APDU) {
 	switch {
 	case dec.ObjectID == nil:
 		names = s.table.NamesByPseudonym(dec.ObjectName)
+	case s.cfg.Hidden[dec.ObjectID.ObjectType]:
+		s.log.Info("a Who-Has for a hidden object finds nothing", "from", env.Peer, "object", objectName(*dec.ObjectID))
+		return
 	case dec.ObjectID.ObjectType == objects.ObjectTypeDevice:
 		if d, ok := s.table.ByVirtual(dec.ObjectID.InstanceNumber); ok {
 			if n, ok := s.table.Name(d.Instance, objects.ObjectIdentifier{ObjectType: objects.ObjectTypeDevice, InstanceNumber: d.Instance}); ok {
@@ -765,7 +801,7 @@ func (s *Shifter) whoHas(env server.Envelope, apdu *plumbing.APDU) {
 	}
 	for _, n := range names {
 		d, ok := selected[n.Device]
-		if !ok || (dec.HasLimits && (d.Virtual < dec.LowLimit || d.Virtual > dec.HighLimit)) {
+		if !ok || s.cfg.Hidden[n.Type] || (dec.HasLimits && (d.Virtual < dec.LowLimit || d.Virtual > dec.HighLimit)) {
 			continue
 		}
 		obj := n.Object()
@@ -892,15 +928,34 @@ func (s *Shifter) downstreamObject(id objects.ObjectIdentifier) objects.ObjectId
 	return id
 }
 
+// objectListLike are the properties that list objects, and from which the
+// hidden objects are left out: the object-list and structured-object-list
+// of a device, the subordinate-list of a Structured View, the
+// list-of-group-members of a Group.
+var objectListLike = map[uint32]bool{
+	uint32(objects.PropertyIdObjectList):           true,
+	uint32(objects.PropertyIdStructuredObjectList): true,
+	uint32(objects.PropertyIdSubordinateList):      true,
+	uint32(objects.PropertyIdListOfGroupMembers):   true,
+}
+
 // downstream translates the values of one property of one real object on
-// their way to the consumer: device identifiers and addresses by rule, and
-// the strings of a replaced property through the table.
+// their way to the consumer: device identifiers and addresses by rule, the
+// hidden objects left out of a list of objects, the vendor identifier
+// blanked under the strict profile, and every character string through
+// the table unless the property passes.
 func (s *Shifter) downstream(dev table.Device, obj objects.ObjectIdentifier, prop uint32, values []client.Value) []client.Value {
 	values = s.rules.Values(values)
 	if prop == uint32(objects.PropertyIdDeviceAddressBinding) {
 		values = s.rules.AddressBindings(values)
 	}
-	if !s.cfg.Replaced[prop] {
+	if objectListLike[prop] {
+		values = translate.DropObjects(values, s.cfg.Hidden)
+	}
+	if s.cfg.Strict && prop == uint32(objects.PropertyIdVendorIdentifier) {
+		values = translate.ReplaceUnsigned(values, 0)
+	}
+	if control.Passes(prop, s.cfg.PassThrough, s.cfg.Strict) {
 		return values
 	}
 	key := obj
@@ -972,6 +1027,10 @@ func (s *Shifter) readProperty(req *server.Request, from server.Source, dev tabl
 		s.refuse(req, from, *ans)
 		return
 	}
+	if s.hidden(obj) {
+		s.refuseHidden(req, from, obj)
+		return
+	}
 	real, ok := s.upstreamObject(obj)
 	if !ok {
 		s.log.Info("read of a device the shifter never issued", "from", req.Peer, "object", obj.InstanceNumber)
@@ -985,9 +1044,14 @@ func (s *Shifter) readProperty(req *server.Request, from server.Source, dev tabl
 	)
 	ctx, cancel := s.requestCtx()
 	defer cancel()
-	if index != nil {
+	switch {
+	case translate.IsDevice(real) && prop == uint32(objects.PropertyIdObjectList):
+		// The list with the hidden objects left out, whole or by index,
+		// so that the count and the elements agree.
+		values, err = s.objectListValues(ctx, dev, index)
+	case index != nil:
 		values, err = s.site.ReadPropertyIndex(ctx, to, toClientID(real), uint16(prop), *index)
-	} else {
+	default:
 		values, err = s.site.ReadProperty(ctx, to, toClientID(real), uint16(prop))
 	}
 	if err != nil {
@@ -1010,6 +1074,48 @@ func (s *Shifter) readProperty(req *server.Request, from server.Source, dev tabl
 	tags = append(tags, translate.Encode(values)...)
 	tags = append(tags, objects.EncClosingTag(3))
 	req.ComplexACK(from, tags)
+}
+
+// objectListValues answers a read of a device's object-list, whole or by
+// index, from the list as the site gives it with the hidden objects left
+// out. The list is read through the client, which reads it element by
+// element where the device cannot segment, and kept for objectListTTL so
+// that a consumer reading it element by element costs the site one read of
+// it, not one per element. Element 0 is the count.
+func (s *Shifter) objectListValues(ctx context.Context, dev table.Device, index *uint32) ([]client.Value, error) {
+	s.mu.Lock()
+	cached, ok := s.objectLists[dev.Instance]
+	s.mu.Unlock()
+	if !ok || time.Since(cached.at) > objectListTTL {
+		ids, err := s.site.ReadObjectList(ctx, client.Device{Instance: dev.Instance, Addr: dev.Address.Client(), MaxAPDU: dev.MaxAPDU, Segmentation: dev.Segmentation}, nil)
+		if err != nil {
+			return nil, err
+		}
+		kept := ids[:0]
+		for _, id := range ids {
+			if !s.cfg.Hidden[id.Type] {
+				kept = append(kept, id)
+			}
+		}
+		cached = objectList{ids: kept, at: time.Now()}
+		s.mu.Lock()
+		s.objectLists[dev.Instance] = cached
+		s.mu.Unlock()
+	}
+	if index == nil {
+		values := make([]client.Value, len(cached.ids))
+		for i, id := range cached.ids {
+			values[i] = client.Value{Kind: client.KindObjectID, Object: id}
+		}
+		return values, nil
+	}
+	switch {
+	case *index == 0:
+		return []client.Value{{Kind: client.KindUnsigned, Uint: uint64(len(cached.ids))}}, nil
+	case int(*index) <= len(cached.ids):
+		return []client.Value{{Kind: client.KindObjectID, Object: cached.ids[*index-1]}}, nil
+	}
+	return nil, &client.BACnetError{Class: uint32(objects.ErrorClassProperty), Code: uint32(control.ErrorCodeInvalidArrayIndex)}
 }
 
 // rpmSpec is one object of a ReadPropertyMultiple request.
@@ -1084,6 +1190,10 @@ func (s *Shifter) readPropertyMultiple(req *server.Request, from server.Source, 
 	var forward []client.ReadSpec
 	for i := range specs {
 		real, ok := s.upstreamObject(specs[i].obj)
+		if s.hidden(specs[i].obj) {
+			s.log.Info("refused a request for a hidden object", "from", req.Peer, "service", control.ServiceName(req.Service), "object", objectName(specs[i].obj))
+			ok = false
+		}
 		specs[i].real, specs[i].unknown = real, !ok
 		if ok {
 			rs := client.ReadSpec{Object: toClientID(real)}
@@ -1133,7 +1243,9 @@ func (s *Shifter) readPropertyMultiple(req *server.Request, from server.Source, 
 		if !spec.unknown {
 			continue
 		}
-		s.log.Info("read of a device the shifter never issued", "from", req.Peer, "object", spec.obj.InstanceNumber)
+		if !s.hidden(spec.obj) {
+			s.log.Info("read of a device the shifter never issued", "from", req.Peer, "object", spec.obj.InstanceNumber)
+		}
 		tags = append(tags, objects.EncObjectIdentifier(true, 0, spec.obj.ObjectType, spec.obj.InstanceNumber), objects.EncOpeningTag(1))
 		for _, p := range spec.props {
 			tags = append(tags, objects.ContextTag(2, objects.EncUnsignedInteger(uint(p))),
@@ -1185,6 +1297,10 @@ func (s *Shifter) readRange(req *server.Request, from server.Source, dev table.D
 	rr, ans := parseReadRange(req.Tags)
 	if ans != nil {
 		s.refuse(req, from, *ans)
+		return
+	}
+	if s.hidden(toObjectID(rr.Object)) {
+		s.refuseHidden(req, from, toObjectID(rr.Object))
 		return
 	}
 	real, ok := s.upstreamObject(toObjectID(rr.Object))

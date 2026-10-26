@@ -351,3 +351,34 @@ func TestCoalescedWrites(t *testing.T) {
 		t.Errorf("a Save with nothing pending wrote: %d, %v", tb.Writes(), err)
 	}
 }
+
+// Each distinct string of a property gets a record of its own, so that an
+// array of state texts is reversible, and past TextsPerProperty the oldest
+// goes.
+func TestTextsPerProperty(t *testing.T) {
+	tb := open(t, "", key(6))
+	state := uint32(objects.PropertyIdStateText)
+	first, _ := tb.EnsureText(1, ai3, state, "Off")
+	second, _ := tb.EnsureText(1, ai3, state, "On")
+	if first == second || first == "" {
+		t.Fatalf("two state texts: %q, %q", first, second)
+	}
+	if again, _ := tb.EnsureText(1, ai3, state, "Off"); again != first {
+		t.Errorf("the first text changed: %q, %q", first, again)
+	}
+	if _, _, _, texts := tb.Counts(); texts != 2 {
+		t.Errorf("%d text records, want 2", texts)
+	}
+	for i := 0; i < TextsPerProperty; i++ {
+		tb.EnsureText(1, ai3, state, "value "+string(rune('a'+i)))
+	}
+	if _, _, _, texts := tb.Counts(); texts != TextsPerProperty {
+		t.Errorf("%d text records, want the cap of %d", texts, TextsPerProperty)
+	}
+	if rows := tb.Listing("Off"); len(rows) != 0 {
+		t.Errorf("the oldest text is still listed: %+v", rows)
+	}
+	if rows := tb.Listing("value p"); len(rows) != 1 {
+		t.Errorf("the latest text is not listed: %+v", rows)
+	}
+}

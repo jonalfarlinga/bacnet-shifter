@@ -1,7 +1,7 @@
 // Package translate turns the library's decoded values back into tags, and
 // rewrites what identifies the site in values on their way to the consumer:
-// device object identifiers wherever they appear, addresses, and the
-// replaced string properties.
+// device object identifiers wherever they appear, addresses, the objects
+// of a hidden type in a list of objects, and every character string.
 //
 // Device identifiers are rewritten by rule, not by property: every
 // application-tagged object identifier of type device is mapped, at any
@@ -376,15 +376,71 @@ func (r Rules) AddressBindings(values []client.Value) []client.Value {
 	return out
 }
 
-// ReplaceStrings maps every character string among the values, for a
-// replaced property: one string, or an array of them.
+// ReplaceStrings maps every character string among the values, at any
+// depth: one string, an array of them, or the strings inside a constructed
+// value such as a log record or an event message text.
 func ReplaceStrings(values []client.Value, f func(string) string) []client.Value {
 	out := make([]client.Value, len(values))
 	copy(out, values)
 	for i := range out {
-		if out[i].Kind == client.KindString {
+		switch out[i].Kind {
+		case client.KindString:
 			out[i].Str = f(out[i].Str)
+		case client.KindConstructed:
+			out[i].Items = ReplaceStrings(out[i].Items, f)
 		}
+	}
+	return out
+}
+
+// ReplaceUnsigned sets every top-level unsigned value to v: the vendor
+// identifier under the strict profile.
+func ReplaceUnsigned(values []client.Value, v uint64) []client.Value {
+	out := make([]client.Value, len(values))
+	copy(out, values)
+	for i := range out {
+		if out[i].Kind == client.KindUnsigned {
+			out[i].Uint = v
+		}
+	}
+	return out
+}
+
+// DropObjects leaves the objects of the hidden types out of a list of
+// objects: an application-tagged identifier, as in an object-list; a
+// context-tagged [1] identifier with the [0] device identifier before it,
+// as in a subordinate-list of device-object references; or a
+// context-tagged [0] identifier with the constructed [1] list after it, as
+// in a list-of-group-members of read-access specifications.
+func DropObjects(values []client.Value, hidden map[uint16]bool) []client.Value {
+	if len(hidden) == 0 {
+		return values
+	}
+	var out []client.Value
+	for i := 0; i < len(values); i++ {
+		v := values[i]
+		switch {
+		case v.Kind == client.KindObjectID:
+			if hidden[v.Object.Type] {
+				continue
+			}
+		case v.Kind == client.KindContext && len(v.Bytes) == 4:
+			id := objectIDOf(v.Bytes)
+			if !hidden[id.Type] {
+				break
+			}
+			if v.Tag == 1 && len(out) > 0 && out[len(out)-1].Kind == client.KindContext && out[len(out)-1].Tag == 0 {
+				out = out[:len(out)-1] // the device identifier before it
+			}
+			if v.Tag == 0 && i+1 < len(values) && values[i+1].Kind == client.KindConstructed && values[i+1].Tag == 1 {
+				i++ // the property references after it
+			}
+			continue
+		}
+		out = append(out, v)
+	}
+	if out == nil {
+		out = []client.Value{}
 	}
 	return out
 }

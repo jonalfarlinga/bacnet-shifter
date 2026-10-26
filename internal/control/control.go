@@ -60,6 +60,7 @@ const (
 	ErrorCodeInconsistentParameters  uint8 = 9
 	ErrorCodeNoSpaceToAddListElement uint8 = 19
 	ErrorCodeUnknownObject           uint8 = 31
+	ErrorCodeInvalidArrayIndex       uint8 = 42
 	ErrorCodeUnknownProperty         uint8 = 32
 	ErrorCodeWriteAccessDenied       uint8 = 40
 )
@@ -308,21 +309,66 @@ func DefaultReserved() Reserved {
 	return r
 }
 
-// DefaultReplacedNames is the documented default list of replaced string
-// properties.
-var DefaultReplacedNames = []string{"object-name", "description", "location", "model-name", "serial-number"}
+// ---- the string rule and the hidden objects ---------------------------------
 
-// ParseReplaced resolves the names of the replaced string properties.
-func ParseReplaced(names []string) (map[uint32]bool, error) {
+// Every character string in every reply and notification is replaced with
+// a pseudonym unless its property is on the pass-through list, whose
+// documented default is empty. The version strings pass on their own,
+// unless the profile is strict.
+
+// VersionStrings are the properties whose strings name the product rather
+// than the site, and pass unless the profile is strict: vendor-name,
+// firmware-revision and application-software-version.
+var VersionStrings = map[uint32]bool{
+	uint32(objects.PropertyIdVendorName):                 true,
+	uint32(objects.PropertyIdFirmwareRevision):           true,
+	uint32(objects.PropertyIdApplicationSoftwareVersion): true,
+}
+
+// ParsePassThrough resolves the names of the properties whose strings pass
+// as they are.
+func ParsePassThrough(names []string) (map[uint32]bool, error) {
 	set := map[uint32]bool{}
 	for _, n := range names {
 		id, err := PropertyByName(n)
 		if err != nil {
-			return nil, fmt.Errorf("pseudonym.replaced: %w", err)
+			return nil, fmt.Errorf("pseudonym.pass_through: %w", err)
 		}
 		set[id] = true
 	}
 	return set, nil
+}
+
+// DefaultHiddenNames is the documented default of the hidden object types:
+// the Network Port object, whose properties are the device's addresses.
+var DefaultHiddenNames = []string{"network-port"}
+
+// ParseHidden resolves the names of the hidden object types.
+func ParseHidden(names []string) (map[uint16]bool, error) {
+	set := map[uint16]bool{}
+	for _, n := range names {
+		id, err := ObjectTypeByName(n)
+		if err != nil {
+			return nil, fmt.Errorf("pseudonym.hidden_objects: %w", err)
+		}
+		set[id] = true
+	}
+	return set, nil
+}
+
+// DefaultHidden is the default hidden set.
+func DefaultHidden() map[uint16]bool {
+	h, err := ParseHidden(DefaultHiddenNames)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+// Passes reports whether a property's strings cross as they are: on the
+// pass-through list, or a version string outside the strict profile.
+func Passes(property uint32, passThrough map[uint32]bool, strict bool) bool {
+	return passThrough[property] || (!strict && VersionStrings[property])
 }
 
 // ReservedService reports whether a confirmed service is refused for being
@@ -349,21 +395,24 @@ type Write struct {
 	Indexed  bool
 	// Priority is nil when the request names none.
 	Priority *uint8
+	// StringValue says the value holds a character string at some depth.
+	StringValue bool
 }
 
 // Write applies the level's rules to a WriteProperty, in this order:
 // the level, the array-index rule, the reserved objects and properties and
-// the replaced properties, then the priority rule. It gives the priority
-// to send the write at, 0 for none, or the refusal.
+// the string rule, then the priority rule. It gives the priority to send
+// the write at, 0 for none, or the refusal.
 //
 // At full-service a write with no priority goes out at 13, one at 13 to 16
 // keeps its priority, and one at 1 to 12 is refused with
 // write-access-denied, a relinquish the same; an indexed write is refused
 // with Reject other, since the library's write method takes no index; a
-// write to a reserved object or property, or to a replaced property, with
+// write to a reserved object or property, or one whose value holds a
+// character string to a property whose strings the shifter replaces, with
 // write-access-denied. A priority that is not 1 to 16 is refused with
 // Reject parameter-out-of-range at every level, before anything is sent.
-func (l Level) Write(w Write, reserved Reserved, replaced map[uint32]bool) (priority uint8, ans Answer) {
+func (l Level) Write(w Write, reserved Reserved, passThrough map[uint32]bool, strict bool) (priority uint8, ans Answer) {
 	if !l.Forwards(services.ServiceConfirmedWriteProperty) {
 		return 0, Denied
 	}
@@ -373,7 +422,7 @@ func (l Level) Write(w Write, reserved Reserved, replaced map[uint32]bool) (prio
 	if w.Indexed {
 		return 0, RejectOther
 	}
-	if replaced[w.Property] {
+	if w.StringValue && !Passes(w.Property, passThrough, strict) {
 		return 0, WriteDenied
 	}
 	if reserved.Objects[w.Object.ObjectType] || reserved.Properties[w.Property] {

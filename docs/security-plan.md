@@ -53,6 +53,8 @@ Everything in P1 is shifter-side and changes nothing a well-behaved consumer see
 
 Rules first, then code. The revised rules below are reviewed before any code, and land in the README's permissions table and the package comments.
 
+**Built 2026-10-26**, the rules as commit d46f91b and the code after it. The README's section "What crosses to the consumer" is the record of the rules. Where the build departs from the text below: the non-goals live in that README section, since the spec that held them is gone; the version strings pass outside the strict profile by code rather than by a listed default, so that `pseudonym.pass_through` can stay empty; protocol-version and protocol-revision are numbers and pass in every profile; the write rule that replaced "a write to a replaced property" refuses any write whose value holds a character string to a property whose strings the shifter replaces; an indexed read of the object-list is answered from one read of the whole list, cached for thirty seconds, so that the count and the elements agree; each distinct string of a property gets a table record, capped at sixteen per property; and the Network Port test uses a canned site device on a raw socket in the harness, since the sim has none.
+
 ### 3.1 The rules
 
 - **The non-goals**: remove the one about free text outside the replaced list. Add the accepted residuals from threat model §10 (fingerprint, structure, timing, linkability) in their place, so the non-goals say what is knowingly left rather than what is unhandled.
@@ -103,11 +105,7 @@ The operator runs an authenticated tunnel between each consumer and the shifter 
 
 `audit.file`: a path; when set, every forwarded write, every refusal, every subscription made and cancelled, the level in effect at start and every allow-list drop summary is appended as one JSON line: time in UTC, the peer's address and the prefix it matched, the level, the service, the virtual and the real device and object, the property, the index, the priority, the outcome (forwarded, the site's answer, or the refusal and its reason). The file is opened append-only (`O_APPEND`), written through a single goroutine, synced on each write, and never truncated by the shifter; rotation is the operator's, and the README says how. The audit line is in addition to the Info log, not instead of it. A test reads the file back after test 8 and checks each write has its line.
 
-### 5.3 `god`
-
-Decision 1(a) was taken on 2026-10-20: `god` is gone from the level parser, the README and the plan, and M4 and L3 are cancelled. Nothing is built here.
-
-### 5.4 Gate
+### 5.3 Gate
 
 Test 8 with the allow list; the audit test; the README's write rules and operating notes revised, and its permissions table gains the allow-list row.
 
@@ -138,7 +136,6 @@ The site side stays BACnet/IP: the site is what it is. The sizing is weeks, not 
 
 1. **P1** first. No change to the rules, no library change, and it closes the threats that need the least discussion.
 2. **P2** second. Its revision of the rules reopens two non-goals and must be reviewed; the code is small once the rules say what passes.
-3. **Decision 1 on `god`** was taken on 2026-10-20: (a), the level is dropped, and M4 and L3 with it.
 4. **P3** third. It is mostly operator setup and configuration; the code is the allow list and the per-peer level.
 5. **P4** fourth, since the audit log needs P3's identity to be worth anything, and the write allow list is the first thing a reviewer will ask for after identity.
 6. **P5** at any point after P1, in its own session: it touches `cmd/shifter` and the README and nothing the other packages change.
@@ -191,10 +188,9 @@ Beyond the tests: **an external review** of the threat model and the code before
 
 ## 11. Decisions carried from the threat model
 
-1. The fate of `god` (threat model §12.1): (a), taken on 2026-10-20; the level is removed.
-2. The strict profile (§12.2): included in P2 as `pseudonym.strict`, off by default.
-3. Identity by tunnel now, BACnet/SC later (§12.3): the plan assumes yes to both.
-4. `consumer.allow` empty means any source, with a Warn (§12.4).
-5. `writes.allow` empty means nothing is writable at `full-service` (§12.5).
+1. The strict profile (§12.2): included in P2 as `pseudonym.strict`, off by default.
+2. Identity by tunnel now, BACnet/SC later (§12.3): the plan assumes yes to both.
+3. `consumer.allow` empty means any source, with a Warn (§12.4).
+4. `writes.allow` empty means nothing is writable at `full-service` (§12.5).
 
 None is taken here; each is the user's, before the package that depends on it starts.

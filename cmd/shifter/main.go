@@ -146,9 +146,13 @@ func build(f File, logger *slog.Logger, tb *table.Table) (cfg shifter.Config, cl
 	if cfg.Reserved, err = control.ParseReserved(f.Reserved.Services, f.Reserved.Objects, f.Reserved.Properties); err != nil {
 		return cfg, cleanup, err
 	}
-	if cfg.Replaced, err = control.ParseReplaced(f.Pseudonym.Replaced); err != nil {
+	if cfg.PassThrough, err = control.ParsePassThrough(f.Pseudonym.PassThrough); err != nil {
 		return cfg, cleanup, err
 	}
+	if cfg.Hidden, err = control.ParseHidden(f.Pseudonym.HiddenObjects); err != nil {
+		return cfg, cleanup, err
+	}
+	cfg.Strict = f.Pseudonym.Strict
 	cfg.Site.Timeout, cfg.Site.Retries, cfg.Site.MaxRequestsPerSec = f.Site.Timeout, f.Site.Retries, f.Site.MaxRPS
 	cfg.Consumer.Timeout, cfg.Consumer.Retries = f.Site.Timeout, f.Site.Retries
 

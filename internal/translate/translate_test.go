@@ -232,3 +232,42 @@ func TestObjectID(t *testing.T) {
 		t.Error("the wildcard counts as a device")
 	}
 }
+
+// Hidden objects are left out of a list of objects in each of its shapes:
+// an object-list, a subordinate-list of device-object references, and a
+// list-of-group-members of read-access specifications; strings are
+// replaced at any depth.
+func TestDropObjectsAndReplaceDeep(t *testing.T) {
+	hidden := map[uint16]bool{56: true}
+	oid := func(typ uint16, inst uint32) client.Value {
+		return client.Value{Kind: client.KindObjectID, Object: client.ObjectID{Type: typ, Instance: inst}}
+	}
+	ctxID := func(tag uint8, typ uint16, inst uint32) client.Value {
+		v := uint32(typ)<<22 | inst
+		return client.Value{Kind: client.KindContext, Tag: tag, Bytes: []byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)}}
+	}
+	list := DropObjects([]client.Value{oid(8, 1), oid(0, 0), oid(56, 1), oid(0, 1)}, hidden)
+	if len(list) != 3 || list[2].Object.Type != 0 || list[2].Object.Instance != 1 {
+		t.Errorf("object-list: %+v", list)
+	}
+	sub := DropObjects([]client.Value{ctxID(0, 8, 1), ctxID(1, 0, 0), ctxID(0, 8, 1), ctxID(1, 56, 1), ctxID(1, 0, 2)}, hidden)
+	if len(sub) != 3 || sub[2].Tag != 1 {
+		t.Errorf("subordinate-list: %+v", sub)
+	}
+	refs := client.Value{Kind: client.KindConstructed, Tag: 1, Items: []client.Value{{Kind: client.KindContext, Tag: 0, Bytes: []byte{85}}}}
+	members := DropObjects([]client.Value{ctxID(0, 56, 1), refs, ctxID(0, 0, 0), refs}, hidden)
+	if len(members) != 2 || members[0].Tag != 0 || members[1].Kind != client.KindConstructed {
+		t.Errorf("list-of-group-members: %+v", members)
+	}
+	if out := DropObjects([]client.Value{oid(56, 1)}, hidden); out == nil || len(out) != 0 {
+		t.Errorf("a list of hidden objects only: %+v, want an empty list", out)
+	}
+	deep := ReplaceStrings([]client.Value{{Kind: client.KindString, Str: "a"}, {Kind: client.KindConstructed, Tag: 2, Items: []client.Value{{Kind: client.KindString, Str: "b"}}}},
+		func(s string) string { return "x" + s })
+	if deep[0].Str != "xa" || deep[1].Items[0].Str != "xb" {
+		t.Errorf("deep replacement: %+v", deep)
+	}
+	if v := ReplaceUnsigned([]client.Value{{Kind: client.KindUnsigned, Uint: 999}}, 0); v[0].Uint != 0 {
+		t.Errorf("vendor identifier not blanked: %+v", v)
+	}
+}

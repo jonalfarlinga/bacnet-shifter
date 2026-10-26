@@ -161,7 +161,7 @@ func (d *Deriver) Name(device uint32, objType uint16, objInstance uint32, real s
 	return Abbrev(objType) + "-" + d.hexN("name", k, dec(device), dec(objType), dec(objInstance), real)
 }
 
-// Text is the pseudonym of any other replaced string property: a prefix for
+// Text is the pseudonym of a string of any other property: a prefix for
 // the property, a hyphen and hex of H("text", device instance, object type,
 // object instance, property, text). Texts are not identifiers and have no
 // candidates. An empty string stays empty.
@@ -211,9 +211,9 @@ func Abbrev(objType uint16) string {
 	return "T" + dec(objType)
 }
 
-// TextPrefix heads the pseudonym of a replaced string property other than
-// the name: desc, loc, sn and model for the four defaults, p<id> for a
-// property added in configuration.
+// TextPrefix heads the pseudonym of a string of a property other than the
+// name: desc, loc, sn and model for the four that have an abbreviation,
+// p<id> for any other.
 func TextPrefix(property uint32) string {
 	switch property {
 	case uint32(objects.PropertyIdDescription):

@@ -30,6 +30,9 @@ type writeRequest struct {
 	index    *uint32
 	value    []*objects.Object
 	priority *uint8
+	// hasString says a character string is among the value's tags, at
+	// any depth.
+	hasString bool
 }
 
 // parseWrite reads a WriteProperty: object [0], property [1], an optional
@@ -80,6 +83,11 @@ scan:
 		return w, &control.Answer{Reject: true, Reason: objects.RejectReasonMissingRequiredParameter}
 	}
 	w.value = rest[1:end]
+	for _, t := range w.value {
+		if !t.TagClass && t.Kind == objects.TagPrimitive && t.TagNumber == objects.TagCharacterString {
+			w.hasString = true
+		}
+	}
 	rest = rest[end+1:]
 	if len(rest) > 0 && isContext(rest[0], 4) {
 		if len(rest[0].Data) == 0 || len(rest[0].Data) > 4 {
@@ -174,13 +182,18 @@ func (s *Shifter) writeProperty(req *server.Request, from server.Source, dev tab
 		s.refuse(req, from, *ans)
 		return
 	}
+	if s.hidden(w.obj) {
+		s.refuseHidden(req, from, w.obj)
+		return
+	}
 	real, ok := s.upstreamObject(w.obj)
 	if !ok {
 		s.log.Info("write to a device the shifter never issued", "from", req.Peer, "object", w.obj.InstanceNumber)
 		req.Error(from, uint32(objects.ErrorClassObject), uint32(control.ErrorCodeUnknownObject))
 		return
 	}
-	priority, ans2 := s.cfg.Control.Write(control.Write{Object: w.obj, Property: w.prop, Indexed: w.index != nil, Priority: w.priority}, s.cfg.Reserved, s.cfg.Replaced)
+	priority, ans2 := s.cfg.Control.Write(control.Write{Object: w.obj, Property: w.prop, Indexed: w.index != nil, Priority: w.priority, StringValue: w.hasString},
+		s.cfg.Reserved, s.cfg.PassThrough, s.cfg.Strict)
 	if !ans2.Forward {
 		s.refuse(req, from, ans2)
 		return

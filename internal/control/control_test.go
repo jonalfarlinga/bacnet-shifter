@@ -102,10 +102,10 @@ func TestNames(t *testing.T) {
 func u8(v uint8) *uint8 { return &v }
 
 // The write rules at each level: the priority rule, the array index, the
-// reserved objects and properties, and the replaced properties.
+// reserved objects and properties, and the string rule.
 func TestWriteRules(t *testing.T) {
 	reserved := DefaultReserved()
-	replaced, _ := ParseReplaced(DefaultReplacedNames)
+	passThrough := map[uint32]bool{uint32(objects.PropertyIdDescription): true}
 	setpoint := objects.ObjectIdentifier{ObjectType: objects.ObjectTypeAnalogValue, InstanceNumber: 0}
 	alarms := objects.ObjectIdentifier{ObjectType: objects.ObjectTypeNotificationClass, InstanceNumber: 0}
 	pv, oos, name := uint32(objects.PropertyIdPresentValue), uint32(objects.PropertyIdOutOfService), uint32(objects.PropertyIdObjectName)
@@ -129,10 +129,13 @@ func TestWriteRules(t *testing.T) {
 		{"an index is rejected", FullService, Write{Object: setpoint, Property: uint32(objects.PropertyIdPriorityArray), Indexed: true, Priority: u8(16)}, 0, RejectOther},
 		{"a reserved property", FullService, Write{Object: setpoint, Property: oos, Priority: u8(16)}, 0, WriteDenied},
 		{"a reserved object", FullService, Write{Object: alarms, Property: uint32(objects.PropertyIdPriority)}, 0, WriteDenied},
-		{"a replaced property", FullService, Write{Object: setpoint, Property: name}, 0, WriteDenied},
+		{"a string to a replaced property", FullService, Write{Object: setpoint, Property: name, StringValue: true}, 0, WriteDenied},
+		{"a string to a pass-through property", FullService, Write{Object: setpoint, Property: uint32(objects.PropertyIdDescription), StringValue: true}, 13, Answer{Forward: true}},
+		{"a string to a version property", FullService, Write{Object: setpoint, Property: uint32(objects.PropertyIdVendorName), StringValue: true}, 13, Answer{Forward: true}},
+		{"a number to a replaced property", FullService, Write{Object: setpoint, Property: name}, 13, Answer{Forward: true}},
 		{"a reserved object at 16", FullService, Write{Object: alarms, Property: oos, Priority: u8(16)}, 0, WriteDenied},
 	} {
-		priority, ans := tc.level.Write(tc.w, reserved, replaced)
+		priority, ans := tc.level.Write(tc.w, reserved, passThrough, false)
 		if priority != tc.priority || ans != tc.ans {
 			t.Errorf("%s: priority %d, %+v; want %d, %+v", tc.name, priority, ans, tc.priority, tc.ans)
 		}
@@ -151,11 +154,25 @@ func TestDefaults(t *testing.T) {
 	if !r.Services[27] || !r.Objects[objects.ObjectTypeNotificationClass] || !r.Properties[uint32(objects.PropertyIdOutOfService)] {
 		t.Error("a default entry is missing")
 	}
-	replaced, err := ParseReplaced(DefaultReplacedNames)
-	if err != nil || len(replaced) != 5 || !replaced[uint32(objects.PropertyIdSerialNumber)] {
-		t.Errorf("default replaced set: %v, %v", replaced, err)
+	hidden := DefaultHidden()
+	if len(hidden) != 1 || !hidden[56] {
+		t.Errorf("default hidden set: %v", hidden)
 	}
-	if _, err := ParseReplaced([]string{"no-such-property"}); err == nil {
+	if pt, err := ParsePassThrough([]string{"state-text", "active-text"}); err != nil || len(pt) != 2 || !pt[uint32(objects.PropertyIdStateText)] {
+		t.Errorf("pass-through set: %v, %v", pt, err)
+	}
+	if _, err := ParsePassThrough([]string{"no-such-property"}); err == nil {
 		t.Error("an unknown property name was accepted")
+	}
+	if _, err := ParseHidden([]string{"no-such-type"}); err == nil {
+		t.Error("an unknown object type name was accepted")
+	}
+	vendor := uint32(objects.PropertyIdVendorName)
+	if !Passes(vendor, nil, false) || Passes(vendor, nil, true) || Passes(uint32(objects.PropertyIdDescription), nil, false) {
+		t.Error("the version strings pass unless strict, and nothing else passes on its own")
+	}
+	// The strict profile does not override the operator's own list.
+	if !Passes(vendor, map[uint32]bool{vendor: true}, true) {
+		t.Error("a listed property passes under the strict profile too")
 	}
 }

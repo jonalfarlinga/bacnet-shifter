@@ -221,6 +221,10 @@ func (s *Shifter) subscribeCOV(req *server.Request, from server.Source, dev tabl
 			lifetime = &l
 		}
 	}
+	if s.hidden(obj) {
+		s.refuseHidden(req, from, obj)
+		return
+	}
 	real, ok := s.upstreamObject(obj)
 	if !ok {
 		req.Error(from, uint32(objects.ErrorClassObject), uint32(control.ErrorCodeUnknownObject))

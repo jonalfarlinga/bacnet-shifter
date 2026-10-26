@@ -58,32 +58,35 @@ var allProps = []uint16{
 // A few properties for the devices with hundreds of objects.
 var fewProps = []uint16{objects.PropertyIdObjectName, objects.PropertyIdPresentValue, objects.PropertyIdUnits, objects.PropertyIdDescription}
 
-var replaced = map[uint16]bool{
-	objects.PropertyIdObjectName: true, objects.PropertyIdDescription: true, objects.PropertyIdLocation: true,
-	objects.PropertyIdModelName: true, objects.PropertyIdSerialNumber: true,
-}
+// passes reports whether a property's strings cross as they are: outside
+// the strict profile, the three version strings and nothing else.
+func passes(prop uint16) bool { return control.Passes(uint32(prop), nil, false) }
 
-// secrets collects what must never appear on the consumer socket, and the
-// strings that pass through by design (active-text, state-text and the
-// like), which a secret may happen to equal: the sim's "Occupied" is a
-// description and an active-text.
+// secrets collects what must never appear on the consumer socket: every
+// character string the site returned, as the BACnet encoding of it (tag,
+// length, character set, bytes), so that a short string such as "On" is
+// not found by chance in a number; and the byte sequences of the site's
+// identifiers and addresses.
 type secrets struct {
-	strings     [][]byte
-	bytes       [][]byte
-	passThrough map[string]bool
+	strings map[string][]byte
+	bytes   [][]byte
 }
 
 func (s *secrets) addString(str string) {
-	if str != "" {
-		s.strings = append(s.strings, []byte(str))
+	if str == "" {
+		return
 	}
-}
-
-func (s *secrets) addPassThrough(str string) {
-	if s.passThrough == nil {
-		s.passThrough = map[string]bool{}
+	if s.strings == nil {
+		s.strings = map[string][]byte{}
 	}
-	s.passThrough[str] = true
+	if _, ok := s.strings[str]; ok {
+		return
+	}
+	b, err := objects.EncString(str).MarshalBinary()
+	if err != nil {
+		panic(err)
+	}
+	s.strings[str] = b
 }
 
 func TestFidelityAndLeak(t *testing.T) {
@@ -321,31 +324,57 @@ func compareObject(t *testing.T, rec table.Device, rules translate.Rules, direct
 			continue // the clock moves between the two reads
 		}
 		want := rules.Values(dp.Values)
-		for _, v := range dp.Values {
-			if v.Kind == client.KindString && !replaced[prop] {
-				leak.addPassThrough(v.Str)
-			}
-		}
-		if replaced[prop] {
-			for _, v := range dp.Values {
-				if v.Kind == client.KindString {
-					leak.addString(v.Str)
-				}
-			}
-			for j, v := range want {
-				if v.Kind == client.KindString && v.Str != "" {
-					got := via.Props[i].Values
-					if j >= len(got) || got[j].Kind != client.KindString || got[j].Str == v.Str || got[j].Str == "" {
-						t.Errorf("%s: %q was not replaced: %+v", where, v.Str, got)
-					}
-					want[j].Str = got[j].Str // compare the rest of the value as is
-				}
-			}
+		if !passes(prop) {
+			// Every string is a secret, and must have come back as a
+			// pseudonym; the rest of the value is compared as it is.
+			collectStrings(dp.Values, leak)
+			want = expectReplaced(t, where, want, vp.Values)
 		}
 		if !equalValues(want, vp.Values) {
 			t.Errorf("%s: through the shifter %+v, want %+v", where, vp.Values, want)
 		}
 	}
+}
+
+// collectStrings adds every string among the values, at any depth, to the
+// secrets.
+func collectStrings(values []client.Value, leak *secrets) {
+	for _, v := range values {
+		switch v.Kind {
+		case client.KindString:
+			leak.addString(v.Str)
+		case client.KindConstructed:
+			collectStrings(v.Items, leak)
+		}
+	}
+}
+
+// expectReplaced checks that every string among want came back in got as
+// a pseudonym, neither the real string nor empty, and returns want with
+// the pseudonyms in place, so that the rest of the value compares as it
+// is.
+func expectReplaced(t *testing.T, where string, want, got []client.Value) []client.Value {
+	t.Helper()
+	out := make([]client.Value, len(want))
+	copy(out, want)
+	for j, v := range out {
+		switch v.Kind {
+		case client.KindString:
+			if v.Str == "" {
+				continue
+			}
+			if j >= len(got) || got[j].Kind != client.KindString || got[j].Str == v.Str || got[j].Str == "" {
+				t.Errorf("%s: %q was not replaced: %+v", where, v.Str, got)
+				continue
+			}
+			out[j].Str = got[j].Str
+		case client.KindConstructed:
+			if j < len(got) && got[j].Kind == client.KindConstructed {
+				out[j].Items = expectReplaced(t, where, v.Items, got[j].Items)
+			}
+		}
+	}
+	return out
 }
 
 // equalValues compares values, with a tolerance for the reals the sim
@@ -383,12 +412,9 @@ func checkLeak(t *testing.T, events []client.PacketEvent, leak secrets) {
 	}
 	found := map[string]bool{}
 	for _, e := range events {
-		for _, s := range leak.strings {
-			if leak.passThrough[string(s)] {
-				continue
-			}
-			if bytes.Contains(e.Data, s) {
-				found[fmt.Sprintf("string %q", s)] = true
+		for str, enc := range leak.strings {
+			if bytes.Contains(e.Data, enc) {
+				found[fmt.Sprintf("string %q", str)] = true
 			}
 		}
 		for _, s := range leak.bytes {
@@ -740,7 +766,10 @@ func TestRemoteSite(t *testing.T) {
 			t.Errorf("network 2001 in an NPDU on the consumer socket: %x", e.Data)
 		}
 	}
-	checkLeak(t, b.ServerRec.Events(), secrets{bytes: [][]byte{{0x07, 0xD1, 0x01, 0x05}, {0x07, 0xD1, 0x01, 0x06}}, strings: [][]byte{[]byte("BBMD-1"), []byte("VAV-2-01")}})
+	leak := secrets{bytes: [][]byte{{0x07, 0xD1, 0x01, 0x05}, {0x07, 0xD1, 0x01, 0x06}}}
+	leak.addString("BBMD-1")
+	leak.addString("VAV-2-01")
+	checkLeak(t, b.ServerRec.Events(), leak)
 }
 
 // ---- Who-Has and the refusals ----------------------------------------------

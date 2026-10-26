@@ -66,7 +66,9 @@ type File struct {
 		Rate    float64  `yaml:"rate"`
 	} `yaml:"survey"`
 	Pseudonym struct {
-		Replaced []string `yaml:"replaced"`
+		PassThrough   []string `yaml:"pass_through"`
+		HiddenObjects []string `yaml:"hidden_objects"`
+		Strict        bool     `yaml:"strict"`
 	} `yaml:"pseudonym"`
 	Reserved struct {
 		Services   []string `yaml:"services"`
@@ -105,7 +107,8 @@ func Defaults() File {
 	f.Survey.At = "02:00"
 	f.Survey.Ranges = []string{}
 	f.Survey.Rate = survey.DefaultPerSec
-	f.Pseudonym.Replaced = append([]string(nil), control.DefaultReplacedNames...)
+	f.Pseudonym.PassThrough = []string{}
+	f.Pseudonym.HiddenObjects = append([]string(nil), control.DefaultHiddenNames...)
 	f.Reserved.Services = append([]string(nil), control.DefaultReservedNames.Services...)
 	f.Reserved.Objects = append([]string(nil), control.DefaultReservedNames.Objects...)
 	f.Reserved.Properties = append([]string(nil), control.DefaultReservedNames.Properties...)
@@ -185,7 +188,10 @@ func (f File) Validate() error {
 	if f.Survey.Enabled && f.Sim != "" && len(ranges) == 0 {
 		return errors.New("survey.ranges is required under sim: the simulated devices are on loopback, which has no subnet to survey")
 	}
-	if _, err := control.ParseReplaced(f.Pseudonym.Replaced); err != nil {
+	if _, err := control.ParsePassThrough(f.Pseudonym.PassThrough); err != nil {
+		return err
+	}
+	if _, err := control.ParseHidden(f.Pseudonym.HiddenObjects); err != nil {
 		return err
 	}
 	if _, err := control.ParseReserved(f.Reserved.Services, f.Reserved.Objects, f.Reserved.Properties); err != nil {
@@ -319,8 +325,12 @@ func Render(f File) string {
 	list(1, "ranges", f.Survey.Ranges, "addresses to survey instead of the whole subnet of site.adapter: 192.168.1.20-192.168.1.60, or one address; those beyond the subnet are pinged too; required under sim")
 	line(1, "rate", fmt.Sprint(f.Survey.Rate), "addresses tried in a second; a /24 takes half a minute at 10, a /16 two hours")
 	b.WriteString("\n")
+	b.WriteString("# Every character string in every reply and notification is replaced with a pseudonym, and objects of a\n")
+	b.WriteString("# hidden type do not exist on the consumer side. The README says what knowingly passes.\n")
 	b.WriteString("pseudonym:\n")
-	list(1, "replaced", f.Pseudonym.Replaced, "properties whose character-string values are replaced with pseudonyms, on every object")
+	list(1, "pass_through", f.Pseudonym.PassThrough, "properties whose character strings cross as they are; vendor-name, firmware-revision and application-software-version pass on their own unless strict")
+	list(1, "hidden_objects", f.Pseudonym.HiddenObjects, "object types answered unknown-object and left out of every object list")
+	line(1, "strict", fmt.Sprint(f.Pseudonym.Strict), "vendor identifier 0 in every I-Am and read, and the three version strings replaced like any other")
 	b.WriteString("\n")
 	b.WriteString("# The life-safety and alarm set: refused at every level, full-service included.\n")
 	b.WriteString("reserved:\n")

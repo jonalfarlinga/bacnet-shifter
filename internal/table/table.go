@@ -5,8 +5,8 @@
 //
 // Four kinds of record are kept: a device (real instance and address,
 // virtual instance and MAC), a site network (real and virtual number), an
-// object's name (real and pseudonym) and a replaced text property (real and
-// pseudonym). Names, instances, MACs and network numbers are identifiers and
+// object's name (real and pseudonym) and a string of any other property
+// (real and pseudonym). Names, instances, MACs and network numbers are identifiers and
 // are unique in their namespace; a collision takes the next candidate of the
 // derivation, and the candidate index is recorded. Once an entry exists it
 // is never re-derived, so pseudonyms are stable across runs whatever order
@@ -133,8 +133,8 @@ func (n Name) Object() objects.ObjectIdentifier {
 	return objects.ObjectIdentifier{ObjectType: n.Type, InstanceNumber: n.Instance}
 }
 
-// Text is the pseudonym of one replaced string property other than the
-// name.
+// Text is the pseudonym of one string of a property other than the name:
+// a description, a state text, the text in a log record.
 type Text struct {
 	Device    uint32    `json:"device"`
 	Type      uint16    `json:"type"`
@@ -182,7 +182,9 @@ type Table struct {
 	byVNet   map[uint16]*Network
 	names    map[nameKey]*Name // the current name of each object
 	byPseudo map[string][]*Name
-	texts    map[textKey]*Text
+	// texts holds, for each property of each object, the strings seen in
+	// it, the latest last, at most TextsPerProperty of them.
+	texts map[textKey][]*Text
 	// heard is the devices heard from this run, which a later I-Am at a
 	// different address is a duplicate of rather than a move.
 	heard map[uint32]bool
@@ -243,9 +245,10 @@ func (t *Table) index() {
 		}
 		t.byPseudo[n.Pseudonym] = append(t.byPseudo[n.Pseudonym], n)
 	}
-	t.texts = map[textKey]*Text{}
+	t.texts = map[textKey][]*Text{}
 	for _, x := range t.file.Texts {
-		t.texts[textKey{nameKey{x.Device, x.Type, x.Instance}, x.Property}] = x
+		key := textKey{nameKey{x.Device, x.Type, x.Instance}, x.Property}
+		t.texts[key] = append(t.texts[key], x)
 	}
 	t.heard = map[uint32]bool{}
 }
@@ -699,23 +702,39 @@ func (t *Table) NamesOf(obj objects.ObjectIdentifier) []Name {
 	return list
 }
 
-// EnsureText gives a replaced string property its pseudonym.
+// TextsPerProperty is how many strings of one property of one object the
+// table remembers: enough for an array of state texts, and a bound for a
+// string-valued present value that changes every second, whose pseudonyms
+// stay derivable but whose old values are not kept.
+const TextsPerProperty = 16
+
+// EnsureText gives a string of a property its pseudonym. Each distinct
+// string of the property gets a record, the latest last; past
+// TextsPerProperty the oldest is dropped.
 func (t *Table) EnsureText(device uint32, obj objects.ObjectIdentifier, property uint32, real string) (string, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	key := textKey{nameKey{device, obj.ObjectType, obj.InstanceNumber}, property}
-	if x := t.texts[key]; x != nil && x.Real == real {
-		return x.Pseudonym, nil
+	for _, x := range t.texts[key] {
+		if x.Real == real {
+			return x.Pseudonym, nil
+		}
 	}
 	x := &Text{Device: device, Type: obj.ObjectType, Instance: obj.InstanceNumber, Property: property, Real: real,
 		Pseudonym: t.d.Text(device, obj.ObjectType, obj.InstanceNumber, property, real), FirstSeen: t.Now().UTC()}
-	if old := t.texts[key]; old != nil {
-		*old = *x
-		x = old
-	} else {
-		t.file.Texts = append(t.file.Texts, x)
-		t.texts[key] = x
+	held := t.texts[key]
+	if len(held) >= TextsPerProperty {
+		oldest := held[0]
+		held = held[1:]
+		for i, f := range t.file.Texts {
+			if f == oldest {
+				t.file.Texts = append(t.file.Texts[:i], t.file.Texts[i+1:]...)
+				break
+			}
+		}
 	}
+	t.texts[key] = append(held, x)
+	t.file.Texts = append(t.file.Texts, x)
 	return x.Pseudonym, t.save()
 }
 

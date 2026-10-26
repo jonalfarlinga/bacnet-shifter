@@ -14,15 +14,15 @@ In scope: everything a consumer can send; everything a site device can send; wha
 
 ```
    site network (Z1)                 shifter host (Z2)                 consumer network (Z3)
-   ┌──────────────┐    BACnet/IP    ┌──────────────────────┐    BACnet/IP    ┌──────────────┐
-   │ controllers, │ <────────────── │ site socket (client) │                │ YABE, BMS,   │
-   │ routers,     │  Who-Is, reads, │   │   pseudonyms      │                │ explorer,    │
-   │ BBMD         │  COV, writes    │   ▼   table, key      │                │ anything on  │
-   │              │ ──────────────> │ consumer socket      │ <────────────── │ the LAN      │
-   └──────────────┘  I-Am, replies, │ (server, a router to │  any request   └──────────────┘
-                     notifications  │  the virtual nets)   │ ──────────────>
-                                    │ config.yaml, log     │  replies, I-Am,
-                                    └──────────────────────┘  notifications
+   ┌──────────────┐    BACnet/IP    ┌──────────────────────┐    BACnet/IP
+   │ controllers, │ <────────────── │ site socket (client) │
+   │ routers,     │  Who-Is, reads, │   │   pseudonyms     │
+   │ BBMD         │  COV, writes    │   ▼   table, key     │                 ┌──────────────┐
+   │              │ ──────────────> │ consumer socket      │ <────────────── │ YABE, BMS,   │
+   └──────────────┘  I-Am, replies, │ (server, a router to │  any request    │ explorer,    │
+                     notifications  │  the virtual nets)   │ ──────────────> │ anything on  │
+                                    │ config.yaml, log     │  replies, I-Am, │ the LAN      │
+                                    └──────────────────────┘  notifications  └──────────────┘
 ```
 
 - **The site socket** is the library client. It sends what the level allows and nothing else, enforced by the library's guard; it hears I-Ams, replies and notifications from any address on the site.

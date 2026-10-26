@@ -406,6 +406,20 @@ Four points where the code is more specific than the rules above:
   answered locally with unknown-object rather than passed to the site,
   so that a consumer cannot use a site device as an oracle for real
   instances.
+- **A device's object-list is answered from one read of it**, kept for
+  thirty seconds: the hidden objects are left out, so the count and the
+  elements must agree, and a consumer that reads the list element by
+  element, as it must from a device that cannot segment, would otherwise
+  cost the site one read of the whole list per element. The shifter reads
+  the list as the library client does, whole or element by element, and
+  answers the consumer's whole or indexed read from that; an index past
+  the end is Error, class property, code invalid-array-index.
+- **Each distinct string of a property gets a table record**, so that an
+  array of state texts is reversible with `-table`; a property holds at
+  most sixteen (`table.TextsPerProperty`), the oldest dropped, so that a
+  string-valued present value that changes every second cannot grow the
+  table without bound. Its pseudonyms stay derivable; only the reverse
+  record of an old value is gone.
 - **The site writer is an interface** of one method, `SiteWriter`, which
   the library client fills and the tests replace with a fake to inject the
   site's answers; the write path was built against the fake before the
