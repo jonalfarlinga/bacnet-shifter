@@ -40,7 +40,7 @@ Data flows: a consumer's request is parsed, checked against the level, translate
 | A3 | **Site availability**: the devices' subscription tables, their request capacity, the routers' capacity, the site's bandwidth | On the site | Exhausted through the shifter |
 | A4 | **The de-anonymization secret**: the key and the table | Data directory | Read or copied by anyone but the shifter's account |
 | A5 | **The shifter's availability** | The host | Crashed, hung or starved by anything either side sends |
-| A6 | **The audit record**: who sent which write, and what was refused | The log | Missing, unattributable, or lost |
+| A6 | **The audit record**: who sent which write, and what was refused | The audit file (`audit.file`, since P4), and the log | Missing, unattributable, or lost |
 | A7 | **The configuration**: the level, the adapters, the reserved set | `config.yaml` | Changed by anyone but the operator; set to `full-service` without anyone noticing |
 
 A1 is what the shifter exists to protect. A2 and A3 are what it must not become a path to. A4 to A7 are what makes the first three hold.
@@ -117,7 +117,7 @@ Each threat has an identifier by category (S spoofing, T tampering, R repudiatio
 | ID | Threat | Today | Standing | Plan |
 |---|---|---|---|---|
 | T1 | A consumer below full-service changes site state. | Refused by the dispatch, and again by the library guard (`ReadOnly` at no-write; no device writable below full-service). Test 3 asserts the set of services that reach the site per level. | **held** | — |
-| T2 | At full-service, a consumer writes to any object and property of any device, at 13 to 16, outside the reserved set. That is the level's definition, and the exposure is the whole site minus a deny list. | By design. | **gap** (for a boundary) | P4 |
+| T2 | At full-service, a consumer writes to any object and property of any device, at 13 to 16, outside the reserved set. That is the level's definition, and the exposure is the whole site minus a deny list. | Since P4 (2026-10-26) a write is forwarded only when a `writes.allow` entry covers its object type, property, and the device and consumer the entry names; the list is empty by default, so `full-service` writes nothing until the operator lists what may be written. The reserved set and the priority rule stay the floor under the list. | **held** | P4 |
 | T3 | A write to a life-safety or alarm object, property or service. | Refused at every level by the reserved set; the set is configuration. | **held** | — |
 | T4 | A write that renames a site object and breaks the mapping. | Refused at every level. | **held** | — |
 | T5 | The table or the key is edited on the host: a device's address is redirected, a pseudonym forged. | Nothing checks the file's integrity. | **accepted** (Z2) | P5 |
@@ -127,8 +127,8 @@ Each threat has an identifier by category (S spoofing, T tampering, R repudiatio
 
 | ID | Threat | Today | Standing | Plan |
 |---|---|---|---|---|
-| R1 | A write cannot be attributed. Forwarded writes and refusals are logged at Info, to stderr, among every other line, with the consumer's source address, which S1 says can be forged. | Logged with the source address, which since P3 is a tunnel peer's inner address when the setup is as the README says, so the line names a consumer; still not separable from the rest of the log and not durable. | **partial** since P3 | P4 |
-| R2 | The log is lost: stderr only, no file, no rotation, no append-only record. | Nothing. | **gap** | P4 |
+| R1 | A write cannot be attributed. Forwarded writes and refusals are logged at Info, to stderr, among every other line, with the consumer's source address, which S1 says can be forged. | Since P4 every forwarded write and every refusal is one JSON line in the audit file (`audit.file`) with the consumer's address, the `consumer.peers` entry it matched and its level, the virtual and real device, the object, property, index, priority and the outcome; the address is a tunnel peer's inner address when the setup is as the README says. | **held** with the tunnel; **partial** without | — |
+| R2 | The log is lost: stderr only, no file, no rotation, no append-only record. | Since P4 the audit file is opened append-only, created 0600, written from one goroutine and synced per line; the shifter never truncates it, and rotation is the operator's. A line the queue could not take is counted in the next line. The stderr log stays as it was. | **held** | — |
 
 ### 7.4 Information disclosure
 
@@ -180,6 +180,8 @@ The claims the shifter can make at v0.3.0, each backed by a test:
 4. **A consumer cannot learn a real name or instance by asking** (I8; the Who-Has and unknown-object paths).
 5. **The site sees one address, one subscriber per object, at most one Who-Is a second and at most `max_rps` requests a second** (D7; test 4, the library's limits).
 6. **Only sources on `consumer.allow` are served, each at the level of its `consumer.peers` entry and never above `control`** (S1, with the tunnel the README describes; the allow-list and per-peer tests, test 3 per peer level). Added with P3 on 2026-10-26.
+7. **At `full-service` only a write that a `writes.allow` entry covers reaches the site, and none at all until the operator lists one** (T2; test 8 with the allow list). Added with P4 on 2026-10-26.
+8. **Every forwarded write and every refusal is recorded, append-only, with the consumer's address, its level, the real and virtual object, the property, the priority and the outcome** (R1, R2; the audit test). Added with P4.
 
 ## 9. Security objectives
 
@@ -227,4 +229,4 @@ Taken by the user before the plan's packages start; the plan carries them.
 1. **A strict profile for fingerprinting (I4).** Whether to add a profile that sends a fixed vendor identifier in I-Ams and replaces vendor-name, firmware-revision and application-software-version like other text. The plan includes it as an optional key in P2. **Built 2026-10-26** as `pseudonym.strict`, off by default; the decision whether a site runs with it on is the operator's.
 2. **How a consumer gets an identity (O3).** The plan proposes an authenticated tunnel with the consumer socket bound to the tunnel adapter and the tunnel's inner addresses as the allow list, with BACnet/SC as the standard's route later (P6). The choice of tunnel is the operator's; the shifter needs only an adapter name. **Taken with P3 on 2026-10-26** as the plan proposed; the README's setup section works WireGuard through.
 3. **The default of the consumer allow list.** Empty meaning *any source, with a warning at start* keeps the first run working; empty meaning *no source* is the safer default and breaks the first run until the key is set. The plan proposes the first with a Warn line, and the README's checklist says to set it. **Taken with P3 on 2026-10-26**: empty means any source, with the warning.
-4. **The write allow list's default (O2).** Empty meaning *nothing is writable at full-service until the operator lists it* is the boundary's answer; it makes `full-service` a no-op until configured. The plan proposes that.
+4. **The write allow list's default (O2).** Empty meaning *nothing is writable at full-service until the operator lists it* is the boundary's answer; it makes `full-service` a no-op until configured. The plan proposes that. **Taken with P4 on 2026-10-26**: empty means nothing is writable.

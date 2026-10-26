@@ -99,6 +99,8 @@ The operator runs an authenticated tunnel between each consumer and the shifter 
 
 ## 5. P4 — Policy and audit
 
+**Rules landed 2026-10-26** in the README (the write allow list among the `full-service` rules, the two rows of the permissions table, the audit log under Running) and in the threat model (T2, R1 and R2 held, A6, claims 7 and 8 of §8, decision 4 taken); the code follows.
+
 ### 5.1 The write allow list
 
 `writes.allow`: a list of entries, each with an object type, a property or `*`, and optionally a device (virtual instance or prefix of them) and a consumer prefix. At `full-service` a WriteProperty is forwarded only when an entry matches, after the reserved set and the priority rule, which stay as the floor. Default empty: nothing is writable until the operator lists it (decision 4). `control.Level.Write` takes the list as it takes the reserved set, and the order of the write rules gains one step. Test 8 gains the allow-list cases.
@@ -193,6 +195,6 @@ Beyond the tests: **an external review** of the threat model and the code before
 1. The strict profile (§12.1): included in P2 as `pseudonym.strict`, off by default.
 2. Identity by tunnel now, BACnet/SC later (§12.2): taken with P3 on 2026-10-26.
 3. `consumer.allow` empty means any source, with a Warn (§12.3): taken with P3.
-4. `writes.allow` empty means nothing is writable at `full-service` (§12.4).
+4. `writes.allow` empty means nothing is writable at `full-service` (§12.4): taken with P4 on 2026-10-26.
 
 None is taken here; each is the user's, before the package that depends on it starts.

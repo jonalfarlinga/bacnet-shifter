@@ -238,6 +238,42 @@ prints every record of the table, pseudonym and real side by side, and
 exits; `-table <text>` keeps the records whose pseudonym or real side
 contains the text. It is the only command-line switch.
 
+### The audit log
+
+`audit.file`, a path, turns on the audit log: one JSON object per line,
+appended, for everything that bears on who did what to the site. The
+shifter opens the file append-only, creates it with mode 0600, writes it
+from one goroutine, syncs each line to disk, and never truncates or
+rotates it: rotation is the operator's, by renaming the file and restarting
+the shifter, or with a tool that copies and truncates. The line is in
+addition to the `info` log, not instead of it, and holds pseudonyms and
+real values side by side like the log, so it stays on the host or goes
+only where the log may go.
+
+Each line carries `time` (UTC, RFC 3339), `event`, and what applies of
+`peer` (the consumer's address), `prefix` (the `consumer.peers` entry it
+matched, if any), `control` (the level it was served at), `service`,
+`device` and `real` (the virtual and the real device instance), `object`
+(the object as the consumer named it), `property`, `index`, `priority`,
+`outcome` and `detail`. The events:
+
+- `start`: the level in effect, the allow list, the peers and the write
+  allow list as configured, once when the shifter starts.
+- `write`: a forwarded write, with the site's answer as the outcome
+  (`acked`, or the site's Error, Reject, Abort or silence).
+- `refused`: a request refused by the dispatch, with the refusal as the
+  outcome: the level, the reserved set, the string rule, the priority
+  rule, the write allow list, a hidden object, an unissued device, a
+  subscription cap.
+- `subscribe` and `cancel`: a consumer's subscription made or renewed, and
+  cancelled or lapsed.
+- `dropped`: a summary, at most once a minute, of the datagrams dropped
+  by `consumer.allow`, with the count and the sources.
+
+A line the shifter could not write, because the disk was slow and the
+queue of a thousand lines was full, is counted and reported in the next
+line's `detail`; the shifter never blocks a consumer on the audit disk.
+
 To try the shifter without a network, set `sim: default` (the library's
 simulated devices: an air handler, a plant router with terminal units
 behind it, a meter gateway, a legacy panel) or `sim: remote` (a BBMD with
@@ -341,7 +377,8 @@ names another answer; **—** means the request is dropped without a reply.
 | SubscribeCOV past a cap: the consumer's `consumer.max_subscriptions_per_source`, the device's `site.max_subscriptions_per_device` or the site's `site.max_subscriptions` | refused | Error, resources, no-space-to-add-list-element | same |
 | SubscribeCOVProperty | refused | refused | refused |
 | **Writes** | | | |
-| WriteProperty with no priority, or priority 13 to 16, to an ordinary property of an ordinary object | refused | refused | forwarded, at 13 when none was given |
+| WriteProperty with no priority, or priority 13 to 16, to an ordinary property of an ordinary object that a `writes.allow` entry covers for this consumer | refused | refused | forwarded, at 13 when none was given |
+| WriteProperty that no `writes.allow` entry covers, which with the default empty list is every write | refused | refused | Error, write-access-denied |
 | WriteProperty at priority 1 to 12, a relinquish included | refused | refused | Error, write-access-denied |
 | WriteProperty to a reserved object or property (`reserved` in the configuration) | refused | refused | Error, write-access-denied |
 | WriteProperty whose value holds a character string, to a property not on `pseudonym.pass_through` (the strings the consumer sees are the shifter's, so it cannot write one back) | refused | refused | Error, write-access-denied |
@@ -430,7 +467,10 @@ last cancellation and the shifter's close emptying the sim's subscriptions.
 ## What `full-service` adds
 
 With `control: full-service` the shifter takes WriteProperty from
-consumers and applies these rules, in this order, before anything is sent:
+consumers, and forwards one only when `writes.allow` lists what it writes:
+the list is empty by default, so `full-service` writes nothing until the
+operator says what may be written. It applies these rules, in this order,
+before anything is sent:
 
 - **The array-index rule.** A write with an array index is refused with
   Reject, reason other: the library's write method takes none.
@@ -450,6 +490,25 @@ consumers and applies these rules, in this order, before anything is sent:
   silently demoted. A relinquish, a Null value, follows the same rule. A
   priority that is not 1 to 16 is refused with Reject,
   parameter-out-of-range.
+- **The write allow list.** `writes.allow` is a list of entries, each
+  naming an `object` type and a `property`, with `*` for any property,
+  and optionally a `device`, a virtual device instance, and a `consumer`,
+  a source prefix. A write is forwarded only when an entry matches its
+  object type, its property, its virtual device if the entry names one,
+  and its source if the entry names one; otherwise it is refused with
+  Error, class property, code write-access-denied, the same answer as the
+  reserved set, so that a consumer cannot tell the floor from the list.
+  The reserved set and the priority rule stay the floor under the list: an
+  entry cannot allow what they refuse. The default is empty.
+
+  ```yaml
+  writes:
+    allow:
+      - {object: analog-value, property: present-value}                  # any setpoint, any device, any consumer
+      - {object: binary-output, property: present-value, device: 3410122, consumer: 10.8.0.7/32}
+      - {object: multi-state-value, property: "*", device: 3410122}
+  ```
+
 - **Translation.** The object identifier is mapped to the real one, a
   device object by its virtual instance, and so are the device identifiers
   inside the value at any depth, by the rules reads use in the other
@@ -461,7 +520,8 @@ What passes is sent once, never resent, and the consumer gets the site's
 SimpleACK, Error, Reject or Abort, or silence when the site was silent; a
 consumer's retry after silence is a new write. Every forwarded write is
 logged at `info` with the consumer's address, the device, the object, the
-property and the priority; one the library would not send, because the
+property and the priority, and recorded in the audit log when `audit.file`
+is set (see Running); one the library would not send, because the
 device was never switched writable or is denied, is logged at `warn` and
 answered service-request-denied.
 
