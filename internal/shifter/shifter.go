@@ -677,7 +677,7 @@ func (s *Shifter) fault(req *server.Request, from server.Source, err error) {
 		req.Drop()
 	case errors.Is(err, client.ErrClosed), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		req.Drop()
-	case errors.Is(err, client.ErrServiceNotAllowed), errors.Is(err, client.ErrSourceDenied):
+	case errors.Is(err, client.ErrServiceNotAllowed):
 		s.log.Error("the library's guard refused a request the dispatch let through", attrs...)
 		req.Error(from, uint32(objects.ErrorClassServices), uint32(objects.ErrorCodeServiceRequestDenied))
 	default:

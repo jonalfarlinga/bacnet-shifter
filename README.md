@@ -18,13 +18,19 @@ and nothing else; the `limited` level, which adds change-of-value
 subscriptions; and the `full-service` level, which adds WriteProperty under
 the rules in the permissions table below.
 
-The shifter is built on the released `bacnet` library, v0.5.0 or later,
-which `go.mod` requires like any other module. To develop against a
+The shifter is built on the released `bacnet` library, v0.6.0 or later. To develop against a
 checkout of the library at `../bacnet` instead, add a workspace file,
 which git ignores:
 
 ```bash
 go work init . ../bacnet
+```
+
+Until the version go.mod requires is tagged on the remote, the workspace also needs the module
+replaced at that version, or the go command looks for its go.mod on the module proxy:
+
+```bash
+go work edit -replace=github.com/jonalfarlinga/bacnet@v0.6.0=../bacnet
 ```
 
 ## How it works
