@@ -46,6 +46,13 @@ instance; devices behind a site router appear on a virtual network of their
 own, so the site's nesting survives. The shifter has no device object of its
 own on either side and never announces itself with an I-Am.
 
+Who is served is decided below the protocol, since BACnet/IP cannot
+authenticate a sender: the consumer socket is bound to one adapter, which
+is meant to be an authenticated tunnel's, and `consumer.allow` lists the
+source prefixes it answers. Each consumer is served at its own level,
+from `consumer.peers`, never above the global `control`. The setup section
+says how.
+
 Pseudonyms are HMAC-SHA256 under a per-site key, so they are the same on
 every run and the consumer can store and chart them. The key and
 `table.json`, the record of every pseudonym issued and its real value, live
@@ -140,6 +147,77 @@ To reach a site on another IP subnet, set `site.bbmd` to its BBMD and the
 shifter registers there as a foreign device; `site.add` lists devices that
 no Who-Is reaches, which are read at start. To find such devices without
 listing them, enable the daily survey (below).
+
+### The consumer side: who is served, and at what level
+
+A BACnet/IP datagram carries no proof of who sent it: the source address
+is whatever the sender wrote. The shifter therefore does not try to
+authenticate consumers in BACnet. It takes its identities from below the
+protocol, and makes two things of them.
+
+**`consumer.allow`** is a list of IP prefixes (`10.8.0.0/24`,
+`10.8.0.7/32`). A datagram from any other source is dropped before it is
+parsed, counted, and logged at `debug` once per source per minute, so that
+a flood from outside does not become a flood in the log. The default is
+empty, which means *any source*, and the shifter says so with a line at
+`warn` when it starts: the first run works, and the warning stays until
+the list is set. A deployment sets it.
+
+**`consumer.peers`** gives consumers a level each: a list of entries with
+a `prefix` and a `control`. A consumer whose source matches an entry is
+served at that entry's level; one that matches none is served at the
+global `control`. No entry may name a level above `control`, which stays
+the ceiling: the shifter refuses to start on one that does, and the site
+client is opened for the global level, so the library guard under every
+consumer is the global one. The first matching entry wins, so list the
+narrower prefixes first.
+
+```yaml
+control: limited
+consumer:
+  adapter: wg0
+  allow: [10.8.0.0/24]
+  peers:
+    - {prefix: 10.8.0.7/32, control: no-write}   # the dashboard reads only
+    - {prefix: 10.8.0.0/24, control: limited}    # everyone else on the tunnel
+```
+
+**The tunnel.** An IP prefix identifies a consumer only on a network where
+addresses cannot be forged, and the consumer LAN is not one. Run an
+authenticated tunnel between each consumer and the shifter host, WireGuard
+or IPsec as you prefer, give the shifter the tunnel adapter as
+`consumer.adapter`, and write `consumer.allow` and `consumer.peers` in the
+tunnel's inner addresses. The shifter needs nothing else: the socket is
+bound to the tunnel adapter and hears nothing else, each inner address
+belongs to the peer that holds its key, and the tunnel encrypts what
+crosses the LAN, so a passive observer there learns nothing either.
+
+With WireGuard, on the shifter host: install WireGuard, make a tunnel
+`wg0` with an inner address such as `10.8.0.1/24`, add one `[Peer]` per
+consumer with its public key and `AllowedIPs = 10.8.0.7/32` (that peer's
+inner address, and only that), and activate it. On each consumer: a tunnel
+with that inner address, the shifter host as its one peer, its endpoint
+the host's LAN address and port, and `AllowedIPs = 10.8.0.1/32`. The
+consumer's BACnet client then talks to `10.8.0.1:47808`. On Windows the
+WireGuard adapter is named after the tunnel (`wg0`) and `consumer.adapter:
+wg0` binds it alone. On Linux and macOS a socket that hears broadcasts
+binds every address, so the consumer socket also answers on the LAN
+adapter: confine `consumer.port` to the tunnel interface in the host
+firewall (`iptables -A INPUT -p udp --dport 47808 ! -i wg0 -j DROP`, or
+the nftables or pf equivalent), and keep `consumer.allow` set to the
+tunnel's prefix as the second line.
+
+Without a tunnel, on a plain LAN, `consumer.allow` is a filter against
+mistakes, not an identity: anyone on the LAN can send as an allowed
+address. Run that way only on a consumer network you trust as much as the
+site, and never with `consumer.peers` raising anyone's level.
+
+**The checklist** for the consumer side, before the shifter is described to
+anyone as a boundary: the consumer socket is on the tunnel adapter;
+`consumer.allow` is set to the tunnel's prefix; on Linux and macOS the host
+firewall confines the port to the tunnel interface; `consumer.peers` names
+every consumer that gets more than the default level, narrowest prefix
+first; and the start-up log shows no warning about an empty allow list.
 
 ## Running
 
@@ -237,7 +315,10 @@ second adapter of the shifter's machine.
 ## Permissions: what each `control` level accepts
 
 The `control` key bounds what the shifter sends to the site. Each level
-includes the ones before it. In the table, **forwarded** means the request
+includes the ones before it. The level a request is judged at is its
+consumer's own: the `consumer.peers` entry its source matches, or the
+global `control` when it matches none; no entry is above `control`. In
+the table, **forwarded** means the request
 goes to the site and the consumer gets the site's own answer, translated;
 **answered** means the shifter answers from its table and nothing goes to
 the site; **refused** means the consumer gets Error, class services, code
@@ -273,6 +354,7 @@ names another answer; **—** means the request is dropped without a reply.
 | ConfirmedCOVNotification, ConfirmedEventNotification, ConfirmedPrivateTransfer | refused | refused | refused |
 | A confirmed service the shifter cannot name (13, 21 to 25, 30 and up) | Reject, unrecognized-service | same | same |
 | **At every level** | | | |
+| A datagram from a source outside `consumer.allow`, when the list is set | — , dropped before parsing, counted, logged at debug once per source per minute | same | same |
 | A request naming a device instance the shifter never issued | Error, unknown-object, without asking the site | same | same |
 | A read, subscription, write or Who-Has naming an object of a hidden type (`pseudonym.hidden_objects`: network-port) | Error, unknown-object, without asking the site; nothing for the Who-Has | same | same |
 | An object-list, structured-object-list, subordinate-list or list-of-group-members read | forwarded, with the hidden objects left out | same | same |
@@ -293,6 +375,12 @@ the table, and by the library client's own guard, opened with `ReadOnly` at
 `no-write`, so that a bug in the dispatch still cannot write to a site whose
 shifter is set to `no-write`. Every refusal is logged at `info` with the
 consumer's address, the service and the level.
+
+The level is enforced per consumer by the dispatch, which takes it from
+the request's source; the library guard under all of them is opened for
+the global `control`, which no consumer is above, so a consumer served at
+`no-write` on a `limited` shifter is held to `no-write` by the dispatch and
+to `limited` by the guard.
 
 `full-service` is the highest level. No level forwards the life-safety and
 alarm set, a write at priority 1 to 12, or the other confirmed services: a

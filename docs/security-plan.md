@@ -60,7 +60,7 @@ Rules first, then code. The revised rules below are reviewed before any code, an
 - **The non-goals**: remove the one about free text outside the replaced list. Add the accepted residuals from threat model §10 (fingerprint, structure, timing, linkability) in their place, so the non-goals say what is knowingly left rather than what is unhandled.
 - **The string rule**: replace the deny list with an allow list. Every character string in every reply and notification is pseudonymized through the table, as names and the four text properties are today, with a per-property prefix (`p<id>-` for any property the table has no abbreviation for), **unless** its property is on `pseudonym.pass_through`, whose documented default is empty. The replaced list is retired; the threat model's I2 to I4 record why.
 - **Hidden objects**: a read, subscription or write that names an object of a type on `pseudonym.hidden_objects` (default: `network-port`) is answered Error class object, code unknown-object, without asking the site; the type is left out of a device's object-list on the way down and out of every object-list-like property (structured-view subordinate-list, group member lists) by the same rule.
-- **The strict profile**, `pseudonym.strict: false`. When true, I-Ams carry a fixed vendor identifier (0), and vendor-name, firmware-revision, application-software-version and protocol-revision strings go through the text rule like any other. Decision 2 of the threat model.
+- **The strict profile**, `pseudonym.strict: false`. When true, I-Ams carry a fixed vendor identifier (0), and vendor-name, firmware-revision, application-software-version and protocol-revision strings go through the text rule like any other. Decision 1 of the threat model.
 
 ### 3.2 The code
 
@@ -76,6 +76,8 @@ Test 1 in its new form, test 2 adjusted, the new unit test; README's permissions
 
 ## 4. P3 — Consumer identity
 
+**Rules landed 2026-10-26** in the README (the setup section on the consumer side, the per-consumer sentence over the permissions table and its allow-list row) and in the threat model (S1, I10 and R1, assumption 8, claim 6 of §8, decisions 2 and 3 taken); the code follows.
+
 BACnet/IP cannot authenticate a sender, and the shifter should not try to add a scheme of its own to it. The identity comes from below the protocol, now, and from BACnet/SC, later (P6).
 
 ### 4.1 The tunnel
@@ -84,7 +86,7 @@ The operator runs an authenticated tunnel between each consumer and the shifter 
 
 ### 4.2 The allow list and per-consumer level
 
-- `consumer.allow`: a list of IP prefixes. A datagram from any other source is dropped before parsing, counted, and logged at Debug (once per source per minute, so the log does not become the flood). Default empty, meaning any source, with a Warn line at start saying so (decision 4 of the threat model); the README's checklist says to set it.
+- `consumer.allow`: a list of IP prefixes. A datagram from any other source is dropped before parsing, counted, and logged at Debug (once per source per minute, so the log does not become the flood). Default empty, meaning any source, with a Warn line at start saying so (decision 3 of the threat model); the README's checklist says to set it.
 - `consumer.peers`: a list of `{prefix, control}` entries. A consumer matching an entry gets that level, **never above the global `control`**, which stays the ceiling; a consumer matching none gets the global level. The library guard stays as it is, the floor under all of them: the site client is opened for the global level.
 - The dispatch takes the level from the request's peer instead of from the configuration; `control.Level` is unchanged.
 
@@ -99,7 +101,7 @@ The operator runs an authenticated tunnel between each consumer and the shifter 
 
 ### 5.1 The write allow list
 
-`writes.allow`: a list of entries, each with an object type, a property or `*`, and optionally a device (virtual instance or prefix of them) and a consumer prefix. At `full-service` a WriteProperty is forwarded only when an entry matches, after the reserved set and the priority rule, which stay as the floor. Default empty: nothing is writable until the operator lists it (decision 5). `control.Level.Write` takes the list as it takes the reserved set, and the order of the write rules gains one step. Test 8 gains the allow-list cases.
+`writes.allow`: a list of entries, each with an object type, a property or `*`, and optionally a device (virtual instance or prefix of them) and a consumer prefix. At `full-service` a WriteProperty is forwarded only when an entry matches, after the reserved set and the priority rule, which stay as the floor. Default empty: nothing is writable until the operator lists it (decision 4). `control.Level.Write` takes the list as it takes the reserved set, and the order of the write rules gains one step. Test 8 gains the allow-list cases.
 
 ### 5.2 The audit log
 
@@ -188,9 +190,9 @@ Beyond the tests: **an external review** of the threat model and the code before
 
 ## 11. Decisions carried from the threat model
 
-1. The strict profile (§12.2): included in P2 as `pseudonym.strict`, off by default.
-2. Identity by tunnel now, BACnet/SC later (§12.3): the plan assumes yes to both.
-3. `consumer.allow` empty means any source, with a Warn (§12.4).
-4. `writes.allow` empty means nothing is writable at `full-service` (§12.5).
+1. The strict profile (§12.1): included in P2 as `pseudonym.strict`, off by default.
+2. Identity by tunnel now, BACnet/SC later (§12.2): taken with P3 on 2026-10-26.
+3. `consumer.allow` empty means any source, with a Warn (§12.3): taken with P3.
+4. `writes.allow` empty means nothing is writable at `full-service` (§12.4).
 
 None is taken here; each is the user's, before the package that depends on it starts.
