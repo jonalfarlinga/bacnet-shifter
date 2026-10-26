@@ -2,11 +2,12 @@
 
 A BACnet anonymizing proxy. It sits between a site's BACnet/IP network and
 a consumer's, passes traffic between them, and replaces every piece of
-site-identifying information with a pseudonym on the way out: object names,
-descriptions, locations, model names and serial numbers, device instances,
-addresses and network numbers. The consumer, which may be YABE, the
-`bacnet` repository's explorer or a BMS, speaks ordinary BACnet/IP to the
-shifter and reads `AI-7c3e91ab0d42`, never `AHU1.OAT`.
+site-identifying information with a pseudonym on the way out: every
+character string, object names and descriptions first among them, device
+instances, addresses and network numbers; and it hides the objects that
+carry addresses. The consumer, which may be YABE, the `bacnet` repository's
+explorer or a BMS, speaks ordinary BACnet/IP to the shifter and reads
+`AI-7c3e91ab0d42`, never `AHU1.OAT`.
 
 This file says what the shifter does and how it is set up.
 [docs/threat-model.md](docs/threat-model.md) says what it protects,
@@ -49,6 +50,53 @@ Pseudonyms are HMAC-SHA256 under a per-site key, so they are the same on
 every run and the consumer can store and chart them. The key and
 `table.json`, the record of every pseudonym issued and its real value, live
 in the data directory and are, together, the de-anonymization secret.
+
+## What crosses to the consumer
+
+The rule is to deny what has not been allowed: a value crosses unchanged
+only when it is enumerated as one that may.
+
+- **Every character string is replaced.** Every character string in every
+  reply and every notification, at any depth of the value, is replaced with
+  a pseudonym through the table: an object's name with the type's
+  abbreviation and twelve hex characters (`AI-7c3e91ab0d42`), any other
+  string with a prefix for its property (`desc-`, `loc-`, `sn-`, `model-`,
+  or `p<id>-` for a property with no abbreviation) and the same twelve
+  characters. State texts, active and inactive texts, event message texts,
+  profile names, tags, the present value of a CharacterString Value object
+  and the text in a log record are replaced like a description. An empty
+  string stays empty. The exception is `pseudonym.pass_through`, a list of
+  properties whose strings cross as they are; its documented default is
+  empty, and the version strings below are the only ones the code passes
+  on its own.
+- **The version strings pass, unless the profile is strict.** Vendor-name,
+  firmware-revision and application-software-version name the product, not
+  the site, and cross as they are, as the vendor identifier does in every
+  I-Am and in the device object; so do protocol-version and
+  protocol-revision, which are numbers. With `pseudonym.strict: true` the
+  three strings are replaced like any other, and the vendor identifier is 0
+  in every I-Am and in every read of the property. The strict profile hides
+  what the equipment is; it cannot hide the shape of its object list.
+- **Address-bearing objects are hidden.** An object whose type is on
+  `pseudonym.hidden_objects` (default: `network-port`, whose properties are
+  the device's IP address, subnet mask, gateway, MAC address, BBMD table and
+  network number) does not exist on the consumer side: a read,
+  subscription or write naming one is answered Error, class object, code
+  unknown-object, without asking the site; it is left out of the device's
+  object-list, whether read whole or element by element, and out of the
+  structured-object-list, a Structured View's subordinate-list and a
+  Group's list-of-group-members; a Who-Has for it finds nothing.
+
+What knowingly crosses, and is not claimed as hidden: the equipment's
+fingerprint outside the strict profile (vendor, versions, and in every
+profile the services, object types and object list a device has); the
+site's structure (non-device object instances, which sites often number by
+floor or zone, the count and types of objects per device, the nesting of
+networks); timing and traffic patterns, including the difference between a
+locally answered and a forwarded request; and linkability, since every
+consumer sees the same stable pseudonyms, so one consumer's stored data
+joins another's and a leaked table de-anonymizes all of them at once.
+[docs/threat-model.md](docs/threat-model.md) §10 keeps the list.
 
 ## Setup
 
@@ -214,7 +262,8 @@ names another answer; **—** means the request is dropped without a reply.
 | **Writes** | | | |
 | WriteProperty with no priority, or priority 13 to 16, to an ordinary property of an ordinary object | refused | refused | forwarded, at 13 when none was given |
 | WriteProperty at priority 1 to 12, a relinquish included | refused | refused | Error, write-access-denied |
-| WriteProperty to a reserved object or property (`reserved` in the configuration), or to a replaced property (object-name, description, location, model-name, serial-number) | refused | refused | Error, write-access-denied |
+| WriteProperty to a reserved object or property (`reserved` in the configuration) | refused | refused | Error, write-access-denied |
+| WriteProperty whose value holds a character string, to a property not on `pseudonym.pass_through` (the strings the consumer sees are the shifter's, so it cannot write one back) | refused | refused | Error, write-access-denied |
 | WriteProperty whose value names a device or an address the shifter never issued | refused | refused | Error, other |
 | WriteProperty with an array index | refused | refused | Reject, other |
 | WritePropertyMultiple | refused | refused | refused |
@@ -225,6 +274,8 @@ names another answer; **—** means the request is dropped without a reply.
 | A confirmed service the shifter cannot name (13, 21 to 25, 30 and up) | Reject, unrecognized-service | same | same |
 | **At every level** | | | |
 | A request naming a device instance the shifter never issued | Error, unknown-object, without asking the site | same | same |
+| A read, subscription, write or Who-Has naming an object of a hidden type (`pseudonym.hidden_objects`: network-port) | Error, unknown-object, without asking the site; nothing for the Who-Has | same | same |
+| An object-list, structured-object-list, subordinate-list or list-of-group-members read | forwarded, with the hidden objects left out | same | same |
 | A segmented request | Abort, segmentation-not-supported | same | same |
 | A request for a network the shifter does not route to | Reject-Message-To-Network | same | same |
 | A request to the shifter's own address with no destination network, or to an address nobody is at | — | — | — |
@@ -295,12 +346,16 @@ consumers and applies these rules, in this order, before anything is sent:
 
 - **The array-index rule.** A write with an array index is refused with
   Reject, reason other: the library's write method takes none.
-- **The reserved set.** A write to an object of a reserved type, to a
-  reserved property on any object, or to a replaced property, whose
-  pseudonyms must stay the shifter's, is refused with Error, class
-  property, code write-access-denied. A reserved service is refused with
-  service-request-denied, as the level refuses it anyway. The `reserved`
-  keys are data, so a site can add to them.
+- **The reserved set and the strings.** A write to an object of a reserved
+  type or to a reserved property on any object is refused with Error, class
+  property, code write-access-denied; so is a write whose value holds a
+  character string, at any depth, to a property not on
+  `pseudonym.pass_through`: the strings the consumer sees are pseudonyms,
+  and a string it writes would be replaced on the way back, so the shifter
+  refuses the write rather than let the site hold a consumer's text under a
+  pseudonym. A reserved service is refused with service-request-denied, as
+  the level refuses it anyway. The `reserved` keys are data, so a site can
+  add to them.
 - **The priority rule.** A write that names no priority goes out at 13; one
   at 13 to 16 keeps its priority; one at 1 to 12 is refused with
   write-access-denied, so that the consumer learns it rather than being
@@ -419,8 +474,12 @@ go test ./...
 ```
 
 runs the unit tests of every package and, in `internal/shifter`, the
-end-to-end tests on loopback: the leak test, fidelity against a direct read
-of the simulated site, the guard test at each level, stability
+end-to-end tests on loopback: the leak test, which collects every
+character string, address and identifier the direct read of the simulated
+site returned and asserts that none of them crosses the consumer socket
+unless its property passes; fidelity against that direct read; a Network
+Port object on a canned site device, refused and left out of the object
+list; the guard test at each level; stability
 across restarts, collisions, a site reached through a BBMD with routed
 devices behind a router, and the survey finding a simulated device that the
 shifter's Who-Is cannot reach. The `internal/survey` tests are the
