@@ -1,6 +1,6 @@
 # bacnet-shifter — Threat model
 
-Companion to [security-plan.md](security-plan.md), which says what is built to make a security layer and in what order. This document says what the shifter protects, from whom, through which openings, and how each threat stands against the code as it is. It was written on 2026-10-15 against v0.3.0 (`b4402f5`), with milestones M1 to M3 built and M4 (`god`) not yet started, and every finding in §7 was checked in the code; on 2026-10-20 `god` was dropped (decision 1(a), §12) and the rows that spoke of it were updated; the file and line are given where it helps.
+Companion to [security-plan.md](security-plan.md), which says what is built to make a security layer and in what order. This document says what the shifter protects, from whom, through which openings, and how each threat stands against the code as it is. It was written on 2026-10-15 against v0.3.0 (`b4402f5`) and every finding in §7 was checked in the code.
 
 The one-sentence summary: the shifter is today a sound **disclosure control** with a well-built write guard, and it is **not yet a security boundary**, because nothing on the consumer side is authenticated and nothing bounds what a consumer, or anyone who can put a datagram on the consumer network, can make it do.
 
@@ -165,7 +165,7 @@ Each threat has an identifier by category (S spoofing, T tampering, R repudiatio
 | ID | Threat | Today | Standing | Plan |
 |---|---|---|---|---|
 | E1 | A bug in the dispatch lets a service through at a lower level. | The library guard refuses it independently; a guard refusal is logged at Error. Test 3 per level. | **held** | — |
-| E2 | `god` is in effect without anyone meaning it to be. | The level no longer exists (decision 1(a), 2026-10-20); `full-service` is the ceiling. | **closed** | — |
+| E2 | `full-service` is the ceiling. | **closed** | — |
 | E3 | A consumer registers as a foreign device, or sends a segmented request, or a BVLC function the server does not take. | NAK; Abort segmentation-not-supported; dropped. | **held** | — |
 | E4 | The site pushes state into the shifter: I-Ams create records and announcements (D5), notifications are fanned out, replies are parsed. A hostile site device can make the shifter broadcast on the consumer side. | Bounded only by `slots`. | **partial** | P1 |
 | E5 | A consumer's request names a device or an address the shifter never issued, inside a value, and it is forwarded broken. | Refused with Error class services, code other, at full-service. | **held** | — |
@@ -222,8 +222,7 @@ Taken on knowingly, and to be stated in the README once the plan is done:
 
 Taken by the user before the plan's packages start; the plan carries them.
 
-1. **The fate of `god`.** (a) Drop it from the security profile: the level does not exist in a build meant as a boundary. (b) Keep it, time-boxed: `control: god` needs a `god_until` timestamp in the near future, after which the shifter falls back to `full-service`, with the banner and an audit line at both ends. (c) Keep it as it is, outside the security claims. **Taken on 2026-10-20: (a).** The level is removed from the code and the README; M4 and L3 are cancelled.
-2. **A strict profile for fingerprinting (I4).** Whether to add a profile that sends a fixed vendor identifier in I-Ams and replaces vendor-name, firmware-revision and application-software-version like other text. The plan includes it as an optional key in P2. **Built 2026-10-26** as `pseudonym.strict`, off by default; the decision whether a site runs with it on is the operator's.
-3. **How a consumer gets an identity (O3).** The plan proposes an authenticated tunnel with the consumer socket bound to the tunnel adapter and the tunnel's inner addresses as the allow list, with BACnet/SC as the standard's route later (P6). The choice of tunnel is the operator's; the shifter needs only an adapter name.
-4. **The default of the consumer allow list.** Empty meaning *any source, with a warning at start* keeps the first run working; empty meaning *no source* is the safer default and breaks the first run until the key is set. The plan proposes the first with a Warn line, and the README's checklist says to set it.
-5. **The write allow list's default (O2).** Empty meaning *nothing is writable at full-service until the operator lists it* is the boundary's answer; it makes `full-service` a no-op until configured. The plan proposes that.
+1. **A strict profile for fingerprinting (I4).** Whether to add a profile that sends a fixed vendor identifier in I-Ams and replaces vendor-name, firmware-revision and application-software-version like other text. The plan includes it as an optional key in P2. **Built 2026-10-26** as `pseudonym.strict`, off by default; the decision whether a site runs with it on is the operator's.
+2. **How a consumer gets an identity (O3).** The plan proposes an authenticated tunnel with the consumer socket bound to the tunnel adapter and the tunnel's inner addresses as the allow list, with BACnet/SC as the standard's route later (P6). The choice of tunnel is the operator's; the shifter needs only an adapter name.
+3. **The default of the consumer allow list.** Empty meaning *any source, with a warning at start* keeps the first run working; empty meaning *no source* is the safer default and breaks the first run until the key is set. The plan proposes the first with a Warn line, and the README's checklist says to set it.
+4. **The write allow list's default (O2).** Empty meaning *nothing is writable at full-service until the operator lists it* is the boundary's answer; it makes `full-service` a no-op until configured. The plan proposes that.
