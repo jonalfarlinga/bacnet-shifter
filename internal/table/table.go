@@ -12,8 +12,11 @@
 // is never re-derived, so pseudonyms are stable across runs whatever order
 // the site is seen in.
 //
-// The file is written after every change, to a temporary file renamed into
-// place.
+// The file is written after a change, to a temporary file renamed into
+// place, at most once a second: a change within a second of the last write
+// is written when the second is up, and Close writes whatever is still
+// pending. A flood of new devices then costs the disk one write a second,
+// not one per device.
 package table
 
 import (
@@ -34,6 +37,9 @@ import (
 
 	"github.com/jonalfarlinga/bacnet-shifter/internal/pseudonym"
 )
+
+// SaveInterval is the least time between two writes of the file.
+const SaveInterval = time.Second
 
 // Address is a device's real address as the file holds it.
 type Address struct {
@@ -180,6 +186,17 @@ type Table struct {
 	// heard is the devices heard from this run, which a later I-Am at a
 	// different address is a duplicate of rather than a move.
 	heard map[uint32]bool
+
+	// The coalescing of writes: dirty says the file is behind the table,
+	// lastWrite when it was last written, timer the write scheduled for
+	// when the interval is up, writes how many writes there were, and
+	// lastErr the error of a scheduled write, reported by the next Save or
+	// Close.
+	dirty     bool
+	lastWrite time.Time
+	timer     *time.Timer
+	writes    int
+	lastErr   error
 }
 
 // Open loads the table at path, or starts an empty one when there is no file
@@ -233,12 +250,40 @@ func (t *Table) index() {
 	t.heard = map[uint32]bool{}
 }
 
-// Save writes the table to its file, through a temporary file renamed into
-// place. The caller holds t.mu.
+// save records a change and writes the file, now when the last write was
+// more than SaveInterval ago, otherwise when the interval is up. The caller
+// holds t.mu.
 func (t *Table) save() error {
 	if t.path == "" {
 		return nil
 	}
+	t.dirty = true
+	if t.timer != nil {
+		return nil
+	}
+	if wait := SaveInterval - t.Now().Sub(t.lastWrite); wait > 0 {
+		t.timer = time.AfterFunc(wait, t.scheduledWrite)
+		return nil
+	}
+	return t.write()
+}
+
+// scheduledWrite is the write the timer runs.
+func (t *Table) scheduledWrite() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.timer = nil
+	if err := t.write(); err != nil {
+		t.lastErr = err
+	}
+}
+
+// write writes the table to its file, through a temporary file renamed
+// into place. The caller holds t.mu.
+func (t *Table) write() error {
+	t.dirty = false
+	t.lastWrite = t.Now()
+	t.writes++
 	b, err := json.MarshalIndent(&t.file, "", "  ")
 	if err != nil {
 		return err
@@ -250,11 +295,39 @@ func (t *Table) save() error {
 	return os.Rename(tmp, t.path)
 }
 
-// Save writes the table to its file.
+// flush writes the file now if it is behind, and reports the error of a
+// scheduled write that failed since. The caller holds t.mu.
+func (t *Table) flush() error {
+	if t.timer != nil {
+		t.timer.Stop()
+		t.timer = nil
+	}
+	err := t.lastErr
+	t.lastErr = nil
+	if t.path != "" && t.dirty {
+		if werr := t.write(); err == nil {
+			err = werr
+		}
+	}
+	return err
+}
+
+// Save writes the table to its file now, whatever the interval.
 func (t *Table) Save() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.save()
+	return t.flush()
+}
+
+// Close writes what is pending and stops the scheduled write. The table
+// can still be read after it; a later change schedules a write again.
+func (t *Table) Close() error { return t.Save() }
+
+// Writes is how many times the file has been written since Open.
+func (t *Table) Writes() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.writes
 }
 
 // V is the configured virtual network number.
@@ -364,6 +437,13 @@ func (t *Table) Device(instance uint32) (Device, bool) {
 func (t *Table) Known(instance uint32) bool {
 	_, ok := t.Device(instance)
 	return ok
+}
+
+// Heard reports whether the device has been heard from this run.
+func (t *Table) Heard(instance uint32) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.heard[instance]
 }
 
 // ByVirtual looks a device up by its virtual instance.

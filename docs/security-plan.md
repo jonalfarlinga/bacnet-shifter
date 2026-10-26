@@ -23,6 +23,8 @@ Order: P1, then P2, then P3, then P4; P5 at any point after P1, since it is inde
 
 Everything in P1 is shifter-side and changes nothing a well-behaved consumer sees. It is the cheapest way to stop the proxy being one packet from down, and it comes first because every later package adds parsing and state that need the same bounds.
 
+**Built 2026-10-26.** The README's implementation notes ("What is bounded") are the record of the keys and defaults. Where the build departs from the table below: the per-source rate limit (c) rations unconfirmed requests and network messages too, not only confirmed requests and the Who-Is and Who-Has answers, since any of them costs the shifter work; the sources holding subscriptions (e) are bounded by `consumer.max_sources` as well, so that the consumer subscriptions in all are bounded; the probe of a moved device (h) is one ReadProperty of the old address, and any answer keeps it; the fuzzers (j) run their seed corpus under `go test ./...`, since Go fuzzes one target per invocation, and the minute each is a documented step of the release check rather than ten seconds under the ordinary test run; and the table test flushes before it reloads the file, which the coalesced writes made necessary.
+
 ### 2.1 What is built
 
 | | Item | Where | Threat |

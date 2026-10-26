@@ -76,13 +76,81 @@ type covEntry struct {
 	dead bool
 }
 
-// covState is the fan-out table.
+// covState is the fan-out table, and the counts the caps are enforced on:
+// consumer subscriptions per source, upstream subscriptions per site device
+// and in all. A count is reserved before the subscription is made and
+// released when it goes, so that two subscriptions racing for the last
+// place cannot both have it.
 type covState struct {
 	mu      sync.Mutex
 	entries map[covKey]*covEntry
+
+	perSource, perDevice, total, maxSources int
+	bySource                                map[string]int
+	byDevice                                map[uint32]int
+	upstream                                int
 }
 
-func newCOVState() *covState { return &covState{entries: map[covKey]*covEntry{}} }
+func newCOVState(perSource, perDevice, total, maxSources int) *covState {
+	return &covState{entries: map[covKey]*covEntry{}, perSource: perSource, perDevice: perDevice, total: total, maxSources: maxSources,
+		bySource: map[string]int{}, byDevice: map[uint32]int{}}
+}
+
+// reserveConsumer counts a consumer subscription for the source, unless
+// the source is at its cap, or it is a new source and as many sources
+// already hold subscriptions as the shifter tracks.
+func (c *covState) reserveConsumer(source string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := c.bySource[source]
+	if n >= c.perSource || (n == 0 && len(c.bySource) >= c.maxSources) {
+		return false
+	}
+	c.bySource[source] = n + 1
+	return true
+}
+
+func (c *covState) releaseConsumer(source string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if n := c.bySource[source]; n <= 1 {
+		delete(c.bySource, source)
+	} else {
+		c.bySource[source] = n - 1
+	}
+}
+
+// reserveUpstream counts an upstream subscription to the device, unless
+// the device or the site is at its cap.
+func (c *covState) reserveUpstream(device uint32) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.byDevice[device] >= c.perDevice || c.upstream >= c.total {
+		return false
+	}
+	c.byDevice[device]++
+	c.upstream++
+	return true
+}
+
+func (c *covState) releaseUpstream(device uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if n := c.byDevice[device]; n <= 1 {
+		delete(c.byDevice, device)
+	} else {
+		c.byDevice[device] = n - 1
+	}
+	c.upstream--
+}
+
+// Counts is what the caps are enforced on: the consumer subscriptions of
+// one source, the upstream subscriptions to one device, and in all.
+func (c *covState) counts(source string, device uint32) (bySource, byDevice, upstream int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.bySource[source], c.byDevice[device], c.upstream
+}
 
 // entry gets the fan-out of an object, making an empty one if there is
 // none.
@@ -190,22 +258,38 @@ func (s *Shifter) covSubscribe(req *server.Request, from server.Source, dev tabl
 
 	ck := covConsumerKey(req.Peer, process)
 	c, existed := e.consumers[ck]
+	upstream := e.sub == nil || (confirmed && !e.confirmed)
+	// The caps, before anything is made: a new consumer subscription counts
+	// against its source; a first upstream subscription against the device
+	// and the site. An upgrade to confirmed replaces one that is counted.
+	if !existed && !s.cov.reserveConsumer(req.Peer.Key()) {
+		s.covNoSpace(req, from, dev, key, "the consumer's subscriptions")
+		s.covDropIfEmptyAndUnsubscribed(e)
+		return
+	}
+	if e.sub == nil && !s.cov.reserveUpstream(dev.Instance) {
+		if !existed {
+			s.cov.releaseConsumer(req.Peer.Key())
+		}
+		s.covNoSpace(req, from, dev, key, "the site's subscriptions")
+		s.covDropIfEmptyAndUnsubscribed(e)
+		return
+	}
 	if !existed {
 		c = &covConsumer{peer: req.Peer, process: process}
 		e.consumers[ck] = c
 	}
 	c.confirmed, c.expires = confirmed, time.Now().Add(life)
 
-	upstream := e.sub == nil || (confirmed && !e.confirmed)
 	if upstream {
 		if err := s.covUpstream(e, confirmed); err != nil {
+			if e.sub == nil {
+				s.cov.releaseUpstream(dev.Instance)
+			}
 			if !existed {
-				delete(e.consumers, ck)
+				s.dropConsumer(e, ck)
 			}
-			if len(e.consumers) == 0 && e.sub == nil {
-				e.dead = true
-				s.cov.remove(e)
-			}
+			s.covDropIfEmptyAndUnsubscribed(e)
 			s.fault(req, from, err)
 			return
 		}
@@ -217,7 +301,37 @@ func (s *Shifter) covSubscribe(req *server.Request, from server.Source, dev tabl
 	if !upstream && e.last != nil {
 		// The site tells a new subscriber the value as it is; so does the
 		// shifter, from the latest notification.
-		go s.covSend(e.dev, e.object, *c, *e.last)
+		consumer, last := *c, *e.last
+		s.spawn("notification", []any{"to", consumer.peer}, func() { s.covSend(e.dev, e.object, consumer, last) })
+	}
+}
+
+// covNoSpace refuses a subscription past a cap and logs which.
+func (s *Shifter) covNoSpace(req *server.Request, from server.Source, dev table.Device, key covKey, which string) {
+	bySource, byDevice, upstream := s.cov.counts(req.Peer.Key(), dev.Instance)
+	s.log.Warn("refused a subscription: a cap is reached", "from", req.Peer, "device", dev.Instance, "virtual", dev.Virtual,
+		"object", fmt.Sprintf("%s %d", objects.ObjectTypeName(key.object.Type), key.object.Instance), "cap", which,
+		"source_held", bySource, "device_held", byDevice, "site_held", upstream)
+	req.Error(from, uint32(control.NoSpace.Class), uint32(control.NoSpace.Code))
+}
+
+// dropConsumer takes one consumer out of an entry and releases its count.
+// The caller holds e.mu.
+func (s *Shifter) dropConsumer(e *covEntry, ck string) {
+	c := e.consumers[ck]
+	if c == nil {
+		return
+	}
+	delete(e.consumers, ck)
+	s.cov.releaseConsumer(c.peer.Key())
+}
+
+// covDropIfEmptyAndUnsubscribed takes an entry that was made for a
+// subscription that did not happen out of the map. The caller holds e.mu.
+func (s *Shifter) covDropIfEmptyAndUnsubscribed(e *covEntry) {
+	if len(e.consumers) == 0 && e.sub == nil && !e.dead {
+		e.dead = true
+		s.cov.remove(e)
 	}
 }
 
@@ -230,11 +344,13 @@ func (s *Shifter) covUpstream(e *covEntry, confirmed bool) error {
 		process = covProcessConfirmed
 	}
 	gen := e.gen + 1
-	sub, err := s.site.SubscribeCOV(s.ctx, e.dev.Address.Client(), e.object,
+	ctx, cancel := s.requestCtx()
+	defer cancel()
+	sub, err := s.site.SubscribeCOV(ctx, e.dev.Address.Client(), e.object,
 		client.COVOptions{Confirmed: confirmed, Lifetime: s.cfg.COVLifetime, ProcessID: process},
 		func(n client.COVNotification) {
 			// On the client's read loop: it must not block.
-			go s.covDeliver(e, gen, n)
+			s.spawn("notification", []any{"device", e.dev.Instance, "object", e.object}, func() { s.covDeliver(e, gen, n) })
 		})
 	if err != nil {
 		s.log.Info("upstream subscription refused", "device", e.dev.Instance, "object", e.object, "confirmed", confirmed, "error", err)
@@ -274,7 +390,7 @@ func (s *Shifter) covCancel(req *server.Request, from server.Source, key covKey,
 		return
 	}
 	e.mu.Lock()
-	delete(e.consumers, covConsumerKey(req.Peer, process))
+	s.dropConsumer(e, covConsumerKey(req.Peer, process))
 	sub := s.covDropIfEmpty(e)
 	e.mu.Unlock()
 	s.log.Info("subscription cancelled", "from", req.Peer, "process", process, "device", key.device, "object", key.object, "last", sub != nil)
@@ -295,6 +411,9 @@ func (s *Shifter) covDropIfEmpty(e *covEntry) *client.Subscription {
 	e.gen++
 	sub := e.sub
 	e.sub = nil
+	if sub != nil {
+		s.cov.releaseUpstream(e.dev.Instance)
+	}
 	s.cov.remove(e)
 	return sub
 }
@@ -312,7 +431,7 @@ func (s *Shifter) covDeliver(e *covEntry, gen int, n client.COVNotification) {
 	var targets []covConsumer
 	for k, c := range e.consumers {
 		if !c.expires.After(now) {
-			delete(e.consumers, k)
+			s.dropConsumer(e, k)
 			continue
 		}
 		targets = append(targets, *c)
@@ -320,7 +439,7 @@ func (s *Shifter) covDeliver(e *covEntry, gen int, n client.COVNotification) {
 	dev, object := e.dev, e.object
 	e.mu.Unlock()
 	for _, c := range targets {
-		go s.covSend(dev, object, c, n)
+		s.spawn("notification", []any{"to", c.peer}, func() { s.covSend(dev, object, c, n) })
 	}
 }
 
@@ -393,7 +512,7 @@ func (s *Shifter) covSweeper() {
 			e.mu.Lock()
 			for k, c := range e.consumers {
 				if !c.expires.After(now) {
-					delete(e.consumers, k)
+					s.dropConsumer(e, k)
 					s.log.Info("subscription lapsed", "from", c.peer, "process", c.process, "device", e.dev.Instance, "object", e.object)
 				}
 			}
@@ -415,7 +534,12 @@ func (s *Shifter) covCloseAll() {
 		e.gen++
 		sub := e.sub
 		e.sub = nil
-		e.consumers = map[string]*covConsumer{}
+		if sub != nil {
+			s.cov.releaseUpstream(e.dev.Instance)
+		}
+		for k := range e.consumers {
+			s.dropConsumer(e, k)
+		}
 		s.cov.remove(e)
 		e.mu.Unlock()
 		if sub == nil {

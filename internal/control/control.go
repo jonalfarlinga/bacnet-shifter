@@ -56,11 +56,12 @@ const (
 	ServiceConfirmedSubscribeCOVProperty uint8 = 28
 	ServiceConfirmedGetEventInformation  uint8 = 29
 
-	ErrorCodeOther                  uint8 = 0
-	ErrorCodeInconsistentParameters uint8 = 9
-	ErrorCodeUnknownObject          uint8 = 31
-	ErrorCodeUnknownProperty        uint8 = 32
-	ErrorCodeWriteAccessDenied      uint8 = 40
+	ErrorCodeOther                   uint8 = 0
+	ErrorCodeInconsistentParameters  uint8 = 9
+	ErrorCodeNoSpaceToAddListElement uint8 = 19
+	ErrorCodeUnknownObject           uint8 = 31
+	ErrorCodeUnknownProperty         uint8 = 32
+	ErrorCodeWriteAccessDenied       uint8 = 40
 )
 
 // Answer is what a confirmed request gets from the dispatch: it is
@@ -91,6 +92,9 @@ var (
 	// not split or forward: an indexed ReadPropertyMultiple, a range by
 	// time.
 	RejectOther = Answer{Reject: true, Reason: objects.RejectReasonOther}
+	// NoSpace is the Error for a subscription past one of the caps: the
+	// consumer's own, the site device's, or the site's.
+	NoSpace = Answer{Class: objects.ErrorClassResources, Code: ErrorCodeNoSpaceToAddListElement}
 )
 
 // forwarded is the confirmed services each level adds to the ones before it.

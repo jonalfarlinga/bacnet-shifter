@@ -130,7 +130,10 @@ func TestRecordsAndReload(t *testing.T) {
 		t.Error("a referenced device is reachable")
 	}
 
-	// Reload: everything is as it was.
+	// Reload, once the pending write is flushed: everything is as it was.
+	if err := tb.Close(); err != nil {
+		t.Fatal(err)
+	}
 	again := open(t, path, key(1))
 	if got, ok := again.Device(1001); !ok || got != d {
 		t.Errorf("after reload: %+v, want %+v", got, d)
@@ -241,6 +244,9 @@ func TestCollisions(t *testing.T) {
 	}
 
 	// A restart in another order keeps every pseudonym.
+	if err := tb.Close(); err != nil {
+		t.Fatal(err)
+	}
 	again, err := Open(path, d, 9000)
 	if err != nil {
 		t.Fatal(err)
@@ -297,5 +303,51 @@ func TestInMemory(t *testing.T) {
 	}
 	if err := tb.Save(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Writes within a second of one another are coalesced into one write when
+// the second is up, Save writes now, and Close flushes what is pending.
+func TestCoalescedWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "table.json")
+	tb := open(t, path, key(5))
+	if _, err := tb.EnsureDevice(device(1, "10.0.0.1:47808", 0)); err != nil {
+		t.Fatal(err)
+	}
+	if n := tb.Writes(); n != 1 {
+		t.Fatalf("the first change made %d writes, want 1", n)
+	}
+	for i := uint32(2); i <= 50; i++ {
+		if _, err := tb.EnsureDevice(device(i, "10.0.0.1:47808", 0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := tb.Writes(); n != 1 {
+		t.Errorf("49 changes in the same second made %d more writes, want 0 until the second is up", n-1)
+	}
+	deadline := time.Now().Add(3 * SaveInterval)
+	for tb.Writes() < 2 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n := tb.Writes(); n != 2 {
+		t.Fatalf("%d writes after the interval, want 2", n)
+	}
+	if got := open(t, path, key(5)); len(got.Devices(0)) != 50 {
+		t.Errorf("the scheduled write holds %d devices, want 50", len(got.Devices(0)))
+	}
+	if _, err := tb.EnsureDevice(device(51, "10.0.0.1:47808", 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tb.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if n := tb.Writes(); n != 3 {
+		t.Errorf("%d writes after Close, want 3", n)
+	}
+	if got := open(t, path, key(5)); len(got.Devices(0)) != 51 {
+		t.Errorf("after Close the file holds %d devices, want 51", len(got.Devices(0)))
+	}
+	if err := tb.Save(); err != nil || tb.Writes() != 3 {
+		t.Errorf("a Save with nothing pending wrote: %d, %v", tb.Writes(), err)
 	}
 }

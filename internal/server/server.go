@@ -14,6 +14,12 @@
 // itself behind a router is answered through that router, with the
 // consumer's network and MAC as the destination.
 //
+// The server bounds what a source can make it do: a token bucket per source
+// rations the requests it takes, a semaphore caps the confirmed requests
+// handled at once, a segmented reply is aborted when its acknowledgements
+// stop, and a handler that panics loses one message. Config has the bounds
+// and their defaults; Dropped counts what they refused.
+//
 // The station, dispatch and segmentation code is copied from client/sim and
 // reshaped for the shifter. It stays here: the library handles the plumbing,
 // and its only server code is the sim fixture and the examples. A fix to the
@@ -52,6 +58,14 @@ const (
 	bvlcResultRegisterNAK         = 0x0030
 )
 
+// Defaults for the bounds in Config.
+const (
+	DefaultMaxInFlight     = 64
+	DefaultMaxRPSPerSource = 20
+	DefaultMaxSources      = 1024
+	DefaultSegmentTimeout  = 4 * time.Second
+)
+
 // Config says where the server listens and what it proposes.
 type Config struct {
 	// Local is the address the socket is bound to, or with BindAny, the
@@ -70,6 +84,21 @@ type Config struct {
 	Retries int
 	// Window is the segment window proposed for a segmented reply.
 	Window uint8
+
+	// MaxInFlight is the most confirmed requests handled at once; beyond
+	// it a request is dropped. 0 is DefaultMaxInFlight, below 0 no bound.
+	MaxInFlight int
+	// MaxRPSPerSource is the confirmed requests, unconfirmed requests and
+	// network messages taken from one source in a second, with a burst of
+	// the same; beyond it a datagram is dropped before it is parsed
+	// further. 0 is DefaultMaxRPSPerSource, below 0 no bound.
+	MaxRPSPerSource float64
+	// MaxSources is how many sources the rate limit tracks; the one heard
+	// longest ago is forgotten for a new one. 0 is DefaultMaxSources.
+	MaxSources int
+	// SegmentTimeout is how long a segmented reply waits for the next
+	// Segment-ACK before it is aborted. 0 is DefaultSegmentTimeout.
+	SegmentTimeout time.Duration
 
 	// OnPacket is told of every datagram sent and received, before anything
 	// is done with it, for the leak test and the frames log.
@@ -191,6 +220,16 @@ type segmented struct {
 	from     Source
 	service  uint8
 	segments [][]byte
+	// timer aborts the reply when the next Segment-ACK is late.
+	timer *time.Timer
+}
+
+// Dropped counts what the server refused to handle.
+type Dropped struct {
+	// InFlight is the confirmed requests dropped at MaxInFlight, Rate the
+	// datagrams dropped by the per-source rate limit, Panics the handler
+	// calls that panicked and were recovered.
+	InFlight, Rate, Panics uint64
 }
 
 // Server owns the consumer socket.
@@ -199,6 +238,11 @@ type Server struct {
 	conn *net.UDPConn
 	log  *slog.Logger
 	h    Handler
+	// inFlight is the semaphore under MaxInFlight; nil when unbounded.
+	inFlight chan struct{}
+	limiter  *limiter
+
+	droppedInFlight, droppedRate, panics atomic.Uint64
 
 	mu sync.Mutex
 	// pending is the confirmed requests the handler has not answered yet:
@@ -229,6 +273,18 @@ func Open(cfg Config, h Handler) (*Server, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
+	if cfg.MaxInFlight == 0 {
+		cfg.MaxInFlight = DefaultMaxInFlight
+	}
+	if cfg.MaxRPSPerSource == 0 {
+		cfg.MaxRPSPerSource = DefaultMaxRPSPerSource
+	}
+	if cfg.MaxSources <= 0 {
+		cfg.MaxSources = DefaultMaxSources
+	}
+	if cfg.SegmentTimeout <= 0 {
+		cfg.SegmentTimeout = DefaultSegmentTimeout
+	}
 	bind := cfg.Local
 	if cfg.BindAny {
 		bind = netip.AddrPortFrom(netip.IPv4Unspecified(), cfg.Local.Port())
@@ -248,12 +304,23 @@ func Open(cfg Config, h Handler) (*Server, error) {
 		invokes: map[string]uint8{}, unacked: map[txKey]chan *plumbing.APDU{},
 		closed: make(chan struct{}), done: make(chan struct{}),
 	}
+	if cfg.MaxInFlight > 0 {
+		s.inFlight = make(chan struct{}, cfg.MaxInFlight)
+	}
+	if cfg.MaxRPSPerSource > 0 {
+		s.limiter = newLimiter(cfg.MaxRPSPerSource, cfg.MaxSources)
+	}
 	go s.readLoop()
 	return s, nil
 }
 
 // Local is the address the server sends from.
 func (s *Server) Local() netip.AddrPort { return s.cfg.Local }
+
+// Dropped is what the server has refused to handle since it opened.
+func (s *Server) Dropped() Dropped {
+	return Dropped{InFlight: s.droppedInFlight.Load(), Rate: s.droppedRate.Load(), Panics: s.panics.Load()}
+}
 
 // Close stops the server.
 func (s *Server) Close() error {
@@ -265,7 +332,26 @@ func (s *Server) Close() error {
 	close(s.closed)
 	err := s.conn.Close()
 	<-s.done
+	s.mu.Lock()
+	for key, tx := range s.sending {
+		tx.timer.Stop()
+		delete(s.sending, key)
+	}
+	s.mu.Unlock()
 	return err
+}
+
+// guard runs a handler call under a recover: a panic in it is logged with
+// the datagram's source and counted, and that one message is lost, as the
+// plan has it; the server goes on.
+func (s *Server) guard(what string, from Peer, f func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.panics.Add(1)
+			s.log.Error("a handler panicked; the message is dropped", "handler", what, "from", from, "panic", r)
+		}
+	}()
+	f()
 }
 
 // ---- receiving -------------------------------------------------------------
@@ -346,17 +432,25 @@ func (s *Server) handle(src netip.AddrPort, raw []byte) {
 	if npdu.Control&0x20 != 0 {
 		env.HasDest, env.DNET, env.DADR = true, npdu.DNET, npdu.DADR
 	}
+	offset += npdu.MarshalLen()
+	b := raw[offset:]
+	isReply := npdu.Control&plumbing.NetworkLayerMessage == 0 && len(b) > 0 && b[0]>>4 >= plumbing.SimpleAck
+	// A reply is to a request of the server's own and is matched to it; the
+	// rest is work a source asks for, and is rationed per source.
+	if !isReply && !s.limiter.allow(env.Peer.Key()) {
+		s.droppedRate.Add(1)
+		s.log.Debug("dropped a datagram over the source's rate", "from", env.Peer)
+		return
+	}
 	if npdu.Control&plumbing.NetworkLayerMessage != 0 {
 		var m plumbing.NetworkMessage
 		if err := m.UnmarshalBinary(raw); err != nil {
 			s.log.Debug("dropped a network layer message that could not be parsed", "from", src, "error", err)
 			return
 		}
-		s.h.Network(env, &m)
+		s.guard("network", env.Peer, func() { s.h.Network(env, &m) })
 		return
 	}
-	offset += npdu.MarshalLen()
-	b := raw[offset:]
 	if len(b) == 0 {
 		return
 	}
@@ -369,7 +463,7 @@ func (s *Server) handle(src netip.AddrPort, raw []byte) {
 			s.log.Debug("dropped an unconfirmed request that could not be parsed", "from", env.Peer, "error", err)
 			return
 		}
-		go s.h.Unconfirmed(env, &apdu)
+		go s.guard("unconfirmed", env.Peer, func() { s.h.Unconfirmed(env, &apdu) })
 	case plumbing.SimpleAck, plumbing.ComplexAck, plumbing.Error, plumbing.Reject, plumbing.Abort, plumbing.SegmentAck:
 		var apdu plumbing.APDU
 		if err := apdu.UnmarshalBinary(b); err != nil {
@@ -429,7 +523,25 @@ func (s *Server) confirmed(env Envelope, b []byte) {
 	}
 	s.pending[req.key] = true
 	s.mu.Unlock()
-	go s.h.Confirmed(req)
+	release := func() {}
+	if s.inFlight != nil {
+		select {
+		case s.inFlight <- struct{}{}:
+			release = func() { <-s.inFlight }
+		default:
+			req.Drop()
+			s.droppedInFlight.Add(1)
+			s.log.Debug("dropped a request: too many being handled", "from", env.Peer, "invoke", invoke, "service", req.Service)
+			return
+		}
+	}
+	go func() {
+		defer release()
+		// A handler that panicked never answered: the request ends here, so
+		// that its pending entry does not outlive it.
+		defer req.Drop()
+		s.guard("confirmed", env.Peer, func() { s.h.Confirmed(req) })
+	}()
 }
 
 // reply takes a PDU a consumer sent in answer to the server: the
@@ -444,8 +556,11 @@ func (s *Server) reply(env Envelope, a *plumbing.APDU) {
 		return
 	case plumbing.Abort:
 		s.mu.Lock()
-		_, sending := s.sending[key]
-		delete(s.sending, key)
+		tx, sending := s.sending[key]
+		if sending {
+			tx.timer.Stop()
+			delete(s.sending, key)
+		}
 		s.mu.Unlock()
 		if sending {
 			return
@@ -691,10 +806,25 @@ func (r *Request) ComplexACK(from Source, tags []*objects.Object) error {
 		return r.s.sendAPDU(r.Peer, from, &plumbing.APDU{Type: plumbing.Abort, Flags: 0x1, InvokeID: r.InvokeID, Reason: objects.AbortReasonBufferOverflow})
 	}
 	r.s.mu.Lock()
+	tx.timer = time.AfterFunc(r.s.cfg.SegmentTimeout, func() { r.s.segmentTimeout(r.key, tx) })
 	r.s.sending[r.key] = tx
 	r.s.mu.Unlock()
 	// The first segment goes out alone; the rest follow the acknowledgements.
 	return r.s.sendSegments(r.key, tx, 0, 1)
+}
+
+// segmentTimeout aborts a segmented reply whose consumer stopped
+// acknowledging, so that the sending map holds nothing forever.
+func (s *Server) segmentTimeout(key txKey, tx *segmented) {
+	s.mu.Lock()
+	if s.sending[key] != tx {
+		s.mu.Unlock()
+		return
+	}
+	delete(s.sending, key)
+	s.mu.Unlock()
+	s.log.Debug("aborted a segmented reply: no Segment-ACK in time", "to", tx.to, "invoke", key.invoke)
+	s.sendAPDU(tx.to, tx.from, &plumbing.APDU{Type: plumbing.Abort, Flags: 0x1, InvokeID: key.invoke, Reason: objects.AbortReasonTSMTimeout})
 }
 
 func (s *Server) sendSegments(key txKey, tx *segmented, from, count int) error {
@@ -724,9 +854,14 @@ func (s *Server) continueReply(key txKey, ack *plumbing.APDU) {
 	s.mu.Lock()
 	tx := s.sending[key]
 	next := int(ack.SequenceNumber) + 1
-	if tx != nil && next >= len(tx.segments) {
-		delete(s.sending, key)
-		tx = nil
+	if tx != nil {
+		if next >= len(tx.segments) {
+			tx.timer.Stop()
+			delete(s.sending, key)
+			tx = nil
+		} else {
+			tx.timer.Reset(s.cfg.SegmentTimeout)
+		}
 	}
 	s.mu.Unlock()
 	if tx != nil {

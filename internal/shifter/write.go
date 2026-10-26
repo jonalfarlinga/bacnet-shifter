@@ -201,7 +201,9 @@ func (s *Shifter) writeProperty(req *server.Request, from server.Source, dev tab
 	value := translate.Encode(values)
 
 	attrs := []any{"from", req.Peer, "device", dev.Instance, "virtual", dev.Virtual, "object", objectName(real), "property", control.PropertyName(w.prop), "priority", priority}
-	if err := s.writer.WriteProperty(s.ctx, dev.Address.Client(), toClientID(real), uint16(w.prop), value, priority); err != nil {
+	ctx, cancel := s.requestCtx()
+	defer cancel()
+	if err := s.writer.WriteProperty(ctx, dev.Address.Client(), toClientID(real), uint16(w.prop), value, priority); err != nil {
 		if errors.Is(err, client.ErrNotSent) {
 			s.log.Warn("a write never left the shifter", append(attrs, "error", err)...)
 		}

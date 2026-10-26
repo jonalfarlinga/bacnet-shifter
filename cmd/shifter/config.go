@@ -14,6 +14,8 @@ import (
 	"github.com/jonalfarlinga/bacnet/client"
 
 	"github.com/jonalfarlinga/bacnet-shifter/internal/control"
+	"github.com/jonalfarlinga/bacnet-shifter/internal/server"
+	"github.com/jonalfarlinga/bacnet-shifter/internal/shifter"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/survey"
 )
 
@@ -31,6 +33,10 @@ type File struct {
 		MaxInFlightNet int           `yaml:"max_in_flight_net"`
 		WhoIsInterval  time.Duration `yaml:"whois_interval"`
 		COVLifetime    time.Duration `yaml:"cov_lifetime"`
+		// The bounds of the security plan's P1 on the site side.
+		MaxSubscriptionsPerDevice int `yaml:"max_subscriptions_per_device"`
+		MaxSubscriptions          int `yaml:"max_subscriptions"`
+		MaxNewDevicesPerMinute    int `yaml:"max_new_devices_per_minute"`
 	} `yaml:"site"`
 	Consumer struct {
 		Adapter        string        `yaml:"adapter"`
@@ -38,6 +44,12 @@ type File struct {
 		Network        uint16        `yaml:"network"`
 		Recent         time.Duration `yaml:"recent"`
 		COVMaxLifetime time.Duration `yaml:"cov_max_lifetime"`
+		// The bounds of the security plan's P1 on the consumer side.
+		MaxInFlight               int           `yaml:"max_in_flight"`
+		MaxRPSPerSource           float64       `yaml:"max_rps_per_source"`
+		MaxSources                int           `yaml:"max_sources"`
+		MaxSubscriptionsPerSource int           `yaml:"max_subscriptions_per_source"`
+		SegmentTimeout            time.Duration `yaml:"segment_timeout"`
 	} `yaml:"consumer"`
 	Control string `yaml:"control"`
 	Data    string `yaml:"data"`
@@ -75,10 +87,18 @@ func Defaults() File {
 	f.Site.MaxInFlightNet = client.DefaultMaxInFlightNet
 	f.Site.WhoIsInterval = time.Second
 	f.Site.COVLifetime = 5 * time.Minute
+	f.Site.MaxSubscriptionsPerDevice = shifter.DefaultMaxSubscriptionsPerDevice
+	f.Site.MaxSubscriptions = shifter.DefaultMaxSubscriptions
+	f.Site.MaxNewDevicesPerMinute = shifter.DefaultMaxNewDevicesPerMinute
 	f.Consumer.Port = client.DefaultPort
 	f.Consumer.Network = 9000
 	f.Consumer.Recent = 10 * time.Minute
 	f.Consumer.COVMaxLifetime = 24 * time.Hour
+	f.Consumer.MaxInFlight = server.DefaultMaxInFlight
+	f.Consumer.MaxRPSPerSource = server.DefaultMaxRPSPerSource
+	f.Consumer.MaxSources = server.DefaultMaxSources
+	f.Consumer.MaxSubscriptionsPerSource = shifter.DefaultMaxSubscriptionsPerSource
+	f.Consumer.SegmentTimeout = server.DefaultSegmentTimeout
 	f.Control = control.NoWrite.String()
 	f.Data = "data"
 	f.Log.Level = "info"
@@ -136,6 +156,11 @@ func (f File) Validate() error {
 	if f.Site.Timeout <= 0 || f.Site.Retries < 0 || f.Site.WhoIsInterval <= 0 || f.Site.COVLifetime <= 0 ||
 		f.Consumer.Recent <= 0 || f.Consumer.COVMaxLifetime <= 0 || f.Site.BBMDTTL <= 0 || f.Site.MaxInFlightNet <= 0 {
 		return errors.New("a duration or count is zero or negative")
+	}
+	if f.Site.MaxSubscriptionsPerDevice <= 0 || f.Site.MaxSubscriptions <= 0 || f.Site.MaxNewDevicesPerMinute <= 0 ||
+		f.Consumer.MaxInFlight <= 0 || f.Consumer.MaxRPSPerSource <= 0 || f.Consumer.MaxSources <= 0 ||
+		f.Consumer.MaxSubscriptionsPerSource <= 0 || f.Consumer.SegmentTimeout <= 0 {
+		return errors.New("a bound (max_* or segment_timeout) is zero or negative; there is no turning one off, only setting it high")
 	}
 	if f.Site.BBMD != "" {
 		if _, err := parseAddrPort(f.Site.BBMD, f.Site.Port); err != nil {
@@ -215,6 +240,9 @@ func Render(f File) string {
 		for len(kv) < 26 {
 			kv += " "
 		}
+		if !strings.HasSuffix(kv, " ") {
+			kv += " "
+		}
 		b.WriteString(kv + "# " + comment + "\n")
 	}
 	list := func(indent int, key string, items []string, comment string) {
@@ -246,6 +274,9 @@ func Render(f File) string {
 	line(1, "max_in_flight_net", fmt.Sprint(f.Site.MaxInFlightNet), "requests in flight at once to all the devices of one routed site network")
 	line(1, "whois_interval", duration(f.Site.WhoIsInterval), "a consumer's Who-Is is forwarded to the site at most this often")
 	line(1, "cov_lifetime", duration(f.Site.COVLifetime), "lifetime of the shifter's own subscriptions on the site, renewed by the client")
+	line(1, "max_subscriptions_per_device", fmt.Sprint(f.Site.MaxSubscriptionsPerDevice), "the shifter's own subscriptions to one site device; beyond it a SubscribeCOV is refused")
+	line(1, "max_subscriptions", fmt.Sprint(f.Site.MaxSubscriptions), "the shifter's own subscriptions on the whole site")
+	line(1, "max_new_devices_per_minute", fmt.Sprint(f.Site.MaxNewDevicesPerMinute), "new devices admitted to the table from I-Ams; beyond it an unknown device's I-Am is dropped")
 	b.WriteString("\n")
 
 	b.WriteString("# The consumer side: the socket the shifter serves consumers on, as a router to the virtual network.\n")
@@ -255,6 +286,11 @@ func Render(f File) string {
 	line(1, "network", fmt.Sprint(f.Consumer.Network), "V: the virtual network the site's own IP subnet appears as; each site network behind a router gets a derived number of its own")
 	line(1, "recent", duration(f.Consumer.Recent), "a new device or network is also announced by unicast to every consumer heard from within this long")
 	line(1, "cov_max_lifetime", duration(f.Consumer.COVMaxLifetime), "ceiling on a consumer subscription's lifetime; 0 or absent in the request means this")
+	line(1, "max_in_flight", fmt.Sprint(f.Consumer.MaxInFlight), "consumer requests being handled at once; beyond it a request is dropped")
+	line(1, "max_rps_per_source", fmt.Sprint(f.Consumer.MaxRPSPerSource), "requests taken from one consumer address in a second, with a burst of the same; beyond it they are dropped")
+	line(1, "max_sources", fmt.Sprint(f.Consumer.MaxSources), "consumer addresses tracked for the rate limit, the recent peers and the subscriptions; the oldest is forgotten for a new one")
+	line(1, "max_subscriptions_per_source", fmt.Sprint(f.Consumer.MaxSubscriptionsPerSource), "COV subscriptions one consumer address may hold; beyond it a SubscribeCOV is refused")
+	line(1, "segment_timeout", duration(f.Consumer.SegmentTimeout), "wait for the next Segment-ACK of a segmented reply before it is aborted")
 	b.WriteString("\n")
 
 	b.WriteString("# What the shifter will send to the site: no-write | limited | full-service.\n")

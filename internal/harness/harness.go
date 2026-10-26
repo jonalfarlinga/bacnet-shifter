@@ -19,6 +19,7 @@ import (
 	"github.com/jonalfarlinga/bacnet/client/sim"
 	"github.com/jonalfarlinga/bacnet/objects"
 	"github.com/jonalfarlinga/bacnet/plumbing"
+	"github.com/jonalfarlinga/bacnet/services"
 
 	"github.com/jonalfarlinga/bacnet-shifter/internal/control"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/pseudonym"
@@ -79,6 +80,11 @@ type Options struct {
 	Writer shifter.SiteWriter
 	// Survey, if set, is the shifter's survey configuration.
 	Survey *shifter.SurveyConfig
+	// Configure, if set, adjusts the shifter's configuration before it
+	// starts: the bounds, mostly. The bench's own default lifts the
+	// per-source rate limit, since the consumer client reads from one
+	// address as fast as loopback allows; Configure runs after it.
+	Configure func(cfg *shifter.Config)
 }
 
 // Bench is a running site, shifter and consumer.
@@ -137,14 +143,19 @@ func Start(t *testing.T, opts Options) *Bench {
 	if opts.ForeignDevice {
 		siteCfg.ForeignDevice = &client.ForeignDeviceConfig{BBMD: network.Addr(), TTL: time.Minute}
 	}
-	sh, err := shifter.Start(shifter.Config{
+	cfg := shifter.Config{
 		Site: siteCfg,
 		Consumer: server.Config{
 			Local: netip.MustParseAddrPort("127.0.0.1:0"), Timeout: 500 * time.Millisecond, Retries: 1, OnPacket: b.ServerRec.OnPacket,
+			MaxRPSPerSource: -1,
 		},
 		Control: opts.Control, Reserved: control.DefaultReserved(), Table: tb, Logger: opts.Logger,
 		WhoIsInterval: opts.WhoIsInterval, Writer: opts.Writer, Survey: opts.Survey,
-	})
+	}
+	if opts.Configure != nil {
+		opts.Configure(&cfg)
+	}
+	sh, err := shifter.Start(cfg)
 	if err != nil {
 		network.Close()
 		t.Fatal(err)
@@ -399,6 +410,55 @@ func (r *Raw) Send(t *testing.T, to netip.AddrPort, npdu *plumbing.NPDU, a *plum
 	if _, err := r.Conn.WriteToUDPAddrPort(b, to); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// SendIAm sends an I-Am for a device instance from the raw socket, as a
+// site device would: a unicast to the shifter's site socket, with no
+// routing. The shifter then takes the raw socket for the device's address.
+func (r *Raw) SendIAm(t *testing.T, to netip.AddrPort, instance uint32) {
+	t.Helper()
+	r.Send(t, to, plumbing.NewNPDU(false, false, false, false),
+		plumbing.NewAPDU(plumbing.UnConfirmedReq, services.ServiceUnconfirmedIAm, services.IAmObjects(instance, 1476, 3, 999)))
+}
+
+// AnswerWithError makes the raw socket stand in for a site device that
+// answers every confirmed request with the Error given, until the socket
+// is closed. It is for a device that must answer but need not have
+// anything: a device whose address is probed, a flood of devices whose
+// names are read. The socket cannot be read by the test while it runs.
+func (r *Raw) AnswerWithError(t *testing.T, class, code uint32) {
+	t.Helper()
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			r.Conn.SetReadDeadline(time.Time{})
+			n, from, err := r.Conn.ReadFromUDPAddrPort(buf)
+			if err != nil {
+				return
+			}
+			var bvlc plumbing.BVLC
+			var npdu plumbing.NPDU
+			if bvlc.UnmarshalBinary(buf[:n]) != nil || npdu.UnmarshalBinary(buf[bvlc.MarshalLen():n]) != nil || npdu.Control&plumbing.NetworkLayerMessage != 0 {
+				continue
+			}
+			var a plumbing.APDU
+			if a.UnmarshalBinary(buf[bvlc.MarshalLen()+npdu.MarshalLen():n]) != nil || a.Type != plumbing.ConfirmedReq {
+				continue
+			}
+			reply := plumbing.NewAPDU(plumbing.Error, a.Service, []objects.APDUPayload{objects.EncEnumerated(class), objects.EncEnumerated(code)})
+			reply.InvokeID = a.InvokeID
+			out := plumbing.NewBVLC(plumbing.BVLCFuncUnicast)
+			back := plumbing.NewNPDU(false, false, false, false)
+			b := make([]byte, out.MarshalLen()+back.MarshalLen()+reply.MarshalLen())
+			out.Length = uint16(len(b))
+			out.MarshalTo(b)
+			back.MarshalTo(b[out.MarshalLen():])
+			if reply.MarshalTo(b[out.MarshalLen()+back.MarshalLen():]) != nil {
+				continue
+			}
+			r.Conn.WriteToUDPAddrPort(b, from)
+		}
+	}()
 }
 
 // SendNetwork sends one network layer message.

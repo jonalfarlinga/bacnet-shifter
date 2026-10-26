@@ -79,6 +79,8 @@ func TestLoad(t *testing.T) {
 		"bad rate":     "sim: default\nsurvey:\n  rate: 0\n",
 		"bad range":    "sim: default\nsurvey:\n  ranges: [192.168.1.60-192.168.1.20]\n",
 		"sim no range": "sim: default\nsurvey:\n  enabled: true\n",
+		"bound off":    "sim: default\nconsumer:\n  max_in_flight: 0\n",
+		"bound below":  "sim: default\nsite:\n  max_new_devices_per_minute: -1\n",
 	} {
 		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
 			t.Fatal(err)

@@ -199,7 +199,7 @@ names another answer; **—** means the request is dropped without a reply.
 | The consumer sends | `no-write` | `limited` | `full-service` |
 |---|---|---|---|
 | **Discovery** | | | |
-| Who-Is, in any form | answered, and one Who-Is forwarded at most once a second | same | same |
+| Who-Is, in any form | answered with one burst of I-Ams per source per `site.whois_interval`, and one Who-Is forwarded at most once per interval | same | same |
 | Who-Is-Router-To-Network | answered | answered | answered |
 | Who-Has, by name or by identifier | answered | answered | answered |
 | I-Am, any other unconfirmed service, any other network message | — | — | — |
@@ -209,6 +209,7 @@ names another answer; **—** means the request is dropped without a reply.
 | ReadRange by time | Reject, other | Reject, other | Reject, other |
 | **Subscriptions** | | | |
 | SubscribeCOV, to subscribe or to cancel | refused | forwarded | forwarded |
+| SubscribeCOV past a cap: the consumer's `consumer.max_subscriptions_per_source`, the device's `site.max_subscriptions_per_device` or the site's `site.max_subscriptions` | refused | Error, resources, no-space-to-add-list-element | same |
 | SubscribeCOVProperty | refused | refused | refused |
 | **Writes** | | | |
 | WriteProperty with no priority, or priority 13 to 16, to an ordinary property of an ordinary object | refused | refused | forwarded, at 13 when none was given |
@@ -227,6 +228,8 @@ names another answer; **—** means the request is dropped without a reply.
 | A segmented request | Abort, segmentation-not-supported | same | same |
 | A request for a network the shifter does not route to | Reject-Message-To-Network | same | same |
 | A request to the shifter's own address with no destination network, or to an address nobody is at | — | — | — |
+| A request beyond the source's `consumer.max_rps_per_source`, or a confirmed request beyond `consumer.max_in_flight` | — | — | — |
+| A segmented reply whose next Segment-ACK is `consumer.segment_timeout` late | Abort, TSM timeout | same | same |
 | Register-Foreign-Device | BVLC-Result NAK: the shifter is not a BBMD | same | same |
 
 What the site receives, as a result, is at `no-write` exactly the
@@ -362,6 +365,53 @@ It stays here: the library handles the plumbing, and its only server code
 is the `sim` fixture and the examples. A fix to the segmentation and send
 core the two copies share is checked against the other.
 
+### What is bounded
+
+Package P1 of the [security plan](docs/security-plan.md) put a bound on
+everything a consumer, anyone who can reach the consumer socket, or a
+site device could otherwise make the shifter do without limit. Each bound
+has a key, shown at its default; none can be turned off, only set high.
+A dropped request gets no reply, as from a device under load, and is
+logged at `debug`; a refused one gets the answer in the permissions table.
+
+| Key | Default | What it bounds |
+|---|---|---|
+| `consumer.max_in_flight` | 64 | confirmed requests being handled at once, all consumers together; beyond it a request is dropped |
+| `consumer.max_rps_per_source` | 20 | confirmed requests, unconfirmed requests and network messages taken from one source address in a second, with a burst of the same; beyond it the datagram is dropped before it is parsed further. A reply to a request of the shifter's own (a Segment-ACK, the acknowledgement of a confirmed notification) is never rationed |
+| `consumer.max_sources` | 1024 | source addresses tracked at once: for the rate limit, for the recent peers that are told of a new device by unicast, for the sources answered a Who-Is, and for the sources holding subscriptions. The one heard longest ago is forgotten for a new one |
+| `consumer.max_subscriptions_per_source` | 256 | subscriptions one source address may hold; beyond it SubscribeCOV is refused |
+| `consumer.segment_timeout` | 4s | how long a segmented reply waits for the next Segment-ACK; then it is aborted with TSM timeout and forgotten |
+| `site.max_subscriptions_per_device` | 16 | the shifter's own subscriptions to one site device, whatever the consumers ask |
+| `site.max_subscriptions` | 2048 | the shifter's own subscriptions on the whole site |
+| `site.max_new_devices_per_minute` | 60 | devices admitted to the table from I-Ams, as a bucket of that many refilled at that rate; beyond it an I-Am for an unknown instance is dropped and logged at `warn`. A device the table knows is never dropped |
+| `site.whois_interval` | 1s | one Who-Is forwarded to the site per interval, and one burst of I-Ams to each source per interval, however many Who-Is it sends; an empty burst does not count |
+| `site.timeout` × (`site.retries` + 1) + 2s | 11s | the deadline of every request to the site a consumer causes, waiting in the client's rate limit included; past it the consumer gets silence |
+
+And without a key:
+
+- **Recent peers are earned.** A consumer is told of a new device by
+  unicast when it has sent a confirmed request within `consumer.recent`;
+  a Who-Is alone no longer makes a source recent, since its source address
+  is whatever the sender wrote.
+- **A moved device is confirmed.** When an I-Am claims an instance the
+  table knows from a new address, and the device has not been heard this
+  run, the shifter reads the old address first and takes the new one only
+  when the old is silent; either way the change is logged at `warn`. A
+  second address for a device heard this run is a duplicate, as before,
+  and is not recorded.
+- **The table is written at most once a second**, and once on close.
+- **A handler that panics loses one message.** Every goroutine the server
+  starts for a handler, and every one the shifter starts for a discovery,
+  a notification or a probe, runs under a recover that logs the panic
+  with the source and counts it; the read loops stay as they are, since a
+  panic there is a bug to fix rather than input to survive.
+
+The subscription caps count reservations, taken before the subscription
+is made and given back when it goes, so that two subscriptions racing for
+the last place cannot both have it. A subscription that joins an existing
+upstream subscription costs the site nothing and counts for the source
+only.
+
 ## Tests
 
 ```bash
@@ -376,6 +426,34 @@ devices behind a router, and the survey finding a simulated device that the
 shifter's Who-Is cannot reach. The `internal/survey` tests are the
 utility's, run against the simulated devices with the neighbor table and
 the pings faked; one pings loopback for real, and `-short` skips it.
+
+The bounds have tests of their own in `internal/shifter`: a flood of
+thousands of datagrams from forty source ports, during which the
+goroutine count and the heap stay under a fixed bound and after which an
+ordinary read succeeds; thirty Who-Is in a burst answered with one I-Am
+per device; the three subscription caps and the place a cancellation
+gives back; a thousand I-Ams for distinct devices, of which the table
+admits the configured rate and writes its file once a second; and a device
+claiming a known instance from a new address, refused while the old one
+answers and taken once it is silent. `internal/server` tests the in-flight
+cap, the per-source rate, the segment timeout and the recovery from a
+panicking handler.
+
+The parsers have fuzzers: the server's datagram and confirmed-request
+parsers, the shifter's WriteProperty, ReadPropertyMultiple, ReadRange and
+Who-Has parsers, and the value decoding and rewriting of `translate`.
+`go test ./...` runs each on its seed corpus; to fuzz one for a minute,
+
+```bash
+go test ./internal/shifter -run='^$' -fuzz=FuzzParseWrite -fuzztime=60s
+```
+
+and likewise `FuzzParseRPM`, `FuzzParseReadRange` and `FuzzWhoHas` there,
+`FuzzHandle` and `FuzzConfirmed` in `./internal/server`, and
+`FuzzDecodeValues` in `./internal/translate`. Go runs one fuzz target per
+invocation, so a plain `go test ./...` cannot fuzz for ten seconds as the
+plan asked; the seeds run there, and the minute each is a step of the
+release check.
 
 ```bash
 SHIFTER_SMOKE_ADAPTER="Ethernet 3" go test ./internal/shifter -run TestSmokeBench -v

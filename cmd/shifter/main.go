@@ -132,9 +132,14 @@ func build(f File, logger *slog.Logger, tb *table.Table) (cfg shifter.Config, cl
 	cleanup = func() {}
 	cfg = shifter.Config{
 		WhoIsInterval: f.Site.WhoIsInterval, COVLifetime: f.Site.COVLifetime, MaxInFlightNet: f.Site.MaxInFlightNet,
-		Recent: f.Consumer.Recent, COVMaxLifetime: f.Consumer.COVMaxLifetime,
-		Table: tb, Logger: logger,
+		MaxSubscriptionsPerDevice: f.Site.MaxSubscriptionsPerDevice, MaxSubscriptions: f.Site.MaxSubscriptions,
+		MaxNewDevicesPerMinute: f.Site.MaxNewDevicesPerMinute,
+		Recent:                 f.Consumer.Recent, COVMaxLifetime: f.Consumer.COVMaxLifetime,
+		MaxSubscriptionsPerSource: f.Consumer.MaxSubscriptionsPerSource,
+		Table:                     tb, Logger: logger,
 	}
+	cfg.Consumer.MaxInFlight, cfg.Consumer.MaxRPSPerSource = f.Consumer.MaxInFlight, f.Consumer.MaxRPSPerSource
+	cfg.Consumer.MaxSources, cfg.Consumer.SegmentTimeout = f.Consumer.MaxSources, f.Consumer.SegmentTimeout
 	if cfg.Control, err = control.Parse(f.Control); err != nil {
 		return cfg, cleanup, err
 	}

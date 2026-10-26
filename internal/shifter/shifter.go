@@ -36,7 +36,16 @@ const (
 	DefaultRecent         = 10 * time.Minute
 	DefaultCOVLifetime    = 5 * time.Minute
 	DefaultCOVMaxLifetime = 24 * time.Hour
+
+	DefaultMaxSubscriptionsPerSource = 256
+	DefaultMaxSubscriptionsPerDevice = 16
+	DefaultMaxSubscriptions          = 2048
+	DefaultMaxNewDevicesPerMinute    = 60
 )
+
+// requestMargin is added to the site's timeout and retries for the deadline
+// of each request a consumer causes.
+const requestMargin = 2 * time.Second
 
 // Config is what the shifter runs with. The caller fills in where the two
 // sockets are; the shifter sets what it needs on them.
@@ -61,16 +70,30 @@ type Config struct {
 	// Survey is the daily survey of the site's addresses (survey.go); nil
 	// runs none.
 	Survey *SurveyConfig
+	// MaxSubscriptionsPerDevice bounds the shifter's own subscriptions to
+	// one site device, MaxSubscriptions those to the whole site; beyond
+	// either a consumer's SubscribeCOV is refused. 0 is the default.
+	MaxSubscriptionsPerDevice int
+	MaxSubscriptions          int
+	// MaxNewDevicesPerMinute bounds the devices admitted to the table from
+	// I-Ams; beyond it an I-Am for an unknown instance is dropped until the
+	// window passes. 0 is the default, below 0 no bound.
+	MaxNewDevicesPerMinute int
 
 	// Consumer is the configuration of the consumer socket: Local,
-	// BindAny, Broadcast, Exclude, Timeout, Retries and OnPacket are the
-	// caller's. The shifter sets Logger.
+	// BindAny, Broadcast, Exclude, Timeout, Retries, OnPacket and the
+	// bounds (MaxInFlight, MaxRPSPerSource, MaxSources, SegmentTimeout)
+	// are the caller's. The shifter sets Logger, and keeps its own
+	// per-source state within MaxSources.
 	Consumer server.Config
 	// Recent is how long a consumer counts as recent, to be told of a new
 	// device by unicast.
 	Recent time.Duration
 	// COVMaxLifetime is the ceiling on a consumer's subscription.
 	COVMaxLifetime time.Duration
+	// MaxSubscriptionsPerSource bounds the subscriptions one consumer may
+	// hold; beyond it its SubscribeCOV is refused. 0 is the default.
+	MaxSubscriptionsPerSource int
 
 	Control  control.Level
 	Reserved control.Reserved
@@ -99,20 +122,61 @@ type Shifter struct {
 	slots chan struct{}
 	// cov is the COV fan-out (cov.go).
 	cov *covState
+	// requestTimeout is the deadline of each request to the site a
+	// consumer causes: the site's timeout and retries, plus a margin.
+	requestTimeout time.Duration
+	// admission rations the devices admitted to the table from I-Ams;
+	// nil when unbounded.
+	admission *admission
+	// recent is when each consumer was last heard from with a confirmed
+	// request; whoIsAnswered when each source was last sent a burst of
+	// I-Ams. Both hold at most Consumer.MaxSources entries.
+	recent        *server.Bounded[recentPeer]
+	whoIsAnswered *server.Bounded[time.Time]
 
 	mu sync.Mutex
 	// heard is the devices announced this run.
-	heard map[uint32]bool
-	// recent is when each consumer was last heard from.
-	recent    map[string]recentPeer
+	heard     map[uint32]bool
 	lastWhoIs time.Time
 	// surveying is the survey running now, which hears the I-Ams too.
 	surveying *survey.Survey
+	// dropped counts the I-Ams not admitted and the moves refused.
+	droppedIAms, refusedMoves int
 }
 
 type recentPeer struct {
 	peer server.Peer
 	at   time.Time
+}
+
+// admission is the token bucket new devices are admitted through: a
+// bucket of perMinute tokens, refilled at that rate.
+type admission struct {
+	mu        sync.Mutex
+	perMinute float64
+	tokens    float64
+	last      time.Time
+}
+
+func newAdmission(perMinute int) *admission {
+	return &admission{perMinute: float64(perMinute), tokens: float64(perMinute), last: time.Now()}
+}
+
+// take takes a token, and reports false when there is none.
+func (a *admission) take() bool {
+	if a == nil {
+		return true
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := time.Now()
+	a.tokens = min(a.perMinute, a.tokens+now.Sub(a.last).Minutes()*a.perMinute)
+	a.last = now
+	if a.tokens < 1 {
+		return false
+	}
+	a.tokens--
+	return true
 }
 
 // Start opens both sockets, announces the virtual networks and sends the
@@ -145,12 +209,40 @@ func Start(cfg Config) (*Shifter, error) {
 			return nil, err
 		}
 	}
+	if cfg.MaxSubscriptionsPerSource <= 0 {
+		cfg.MaxSubscriptionsPerSource = DefaultMaxSubscriptionsPerSource
+	}
+	if cfg.MaxSubscriptionsPerDevice <= 0 {
+		cfg.MaxSubscriptionsPerDevice = DefaultMaxSubscriptionsPerDevice
+	}
+	if cfg.MaxSubscriptions <= 0 {
+		cfg.MaxSubscriptions = DefaultMaxSubscriptions
+	}
+	if cfg.MaxNewDevicesPerMinute == 0 {
+		cfg.MaxNewDevicesPerMinute = DefaultMaxNewDevicesPerMinute
+	}
+	if cfg.Consumer.MaxSources <= 0 {
+		cfg.Consumer.MaxSources = server.DefaultMaxSources
+	}
+	// The site client's own defaults, for the deadline of each request.
+	siteTimeout, siteRetries := cfg.Site.Timeout, cfg.Site.Retries
+	if siteTimeout <= 0 {
+		siteTimeout = 3 * time.Second
+	}
+	if siteRetries < 0 {
+		siteRetries = 0
+	}
 	s := &Shifter{
 		cfg: cfg, log: cfg.Logger, table: cfg.Table,
-		slots:  make(chan struct{}, 4),
-		heard:  map[uint32]bool{},
-		recent: map[string]recentPeer{},
-		cov:    newCOVState(),
+		slots:          make(chan struct{}, 4),
+		heard:          map[uint32]bool{},
+		recent:         server.NewBounded[recentPeer](cfg.Consumer.MaxSources),
+		whoIsAnswered:  server.NewBounded[time.Time](cfg.Consumer.MaxSources),
+		cov:            newCOVState(cfg.MaxSubscriptionsPerSource, cfg.MaxSubscriptionsPerDevice, cfg.MaxSubscriptions, cfg.Consumer.MaxSources),
+		requestTimeout: siteTimeout*time.Duration(siteRetries+1) + requestMargin,
+	}
+	if cfg.MaxNewDevicesPerMinute > 0 {
+		s.admission = newAdmission(cfg.MaxNewDevicesPerMinute)
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.rules = translate.Rules{
@@ -213,11 +305,7 @@ func Start(cfg Config) (*Shifter, error) {
 		s.log.Warn("the first Who-Is was not sent", "error", err)
 	}
 	for _, addr := range cfg.Add {
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			s.probe(addr)
-		}()
+		s.spawn("probe", []any{"address", addr}, func() { s.probe(addr) })
 	}
 	s.wg.Add(1)
 	go func() {
@@ -238,7 +326,7 @@ func (s *Shifter) Close() error {
 		err = cerr
 	}
 	s.wg.Wait()
-	if serr := s.table.Save(); err == nil {
+	if serr := s.table.Close(); err == nil {
 		err = serr
 	}
 	return err
@@ -253,6 +341,39 @@ func (s *Shifter) SiteAddr() netip.AddrPort { return s.site.Local() }
 // Table is the shifter's table.
 func (s *Shifter) Table() *table.Table { return s.table }
 
+// Dropped is what the shifter and its server refused: the server's counts,
+// the I-Ams not admitted to the table, and the moves refused because the
+// old address still answered.
+func (s *Shifter) Dropped() (srv server.Dropped, iAms, moves int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.srv.Dropped(), s.droppedIAms, s.refusedMoves
+}
+
+// requestCtx is the context of one request to the site on a consumer's
+// behalf: it ends with the shifter, or when the site's timeout and retries
+// plus a margin have passed, so that a request waiting in the client's
+// token bucket gives up rather than queuing forever.
+func (s *Shifter) requestCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(s.ctx, s.requestTimeout)
+}
+
+// spawn runs f on a goroutine of the shifter's, under a recover: a panic
+// is logged with what the goroutine was doing and lost with it, and the
+// shifter goes on.
+func (s *Shifter) spawn(what string, attrs []any, f func()) {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				s.log.Error("a goroutine panicked; its work is dropped", append([]any{"doing", what, "panic", r}, attrs...)...)
+			}
+		}()
+		f()
+	}()
+}
+
 // ---- the site side ---------------------------------------------------------
 
 // onIAm runs on the client's read loop and must not block. A running
@@ -264,9 +385,7 @@ func (s *Shifter) onIAm(dev client.Device) {
 	if sv != nil {
 		sv.Hear(dev)
 	}
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.spawn("discovery", []any{"instance", dev.Instance, "address", dev.Addr}, func() {
 		select {
 		case s.slots <- struct{}{}:
 		case <-s.ctx.Done():
@@ -274,7 +393,7 @@ func (s *Shifter) onIAm(dev client.Device) {
 		}
 		defer func() { <-s.slots }()
 		s.discovered(dev)
-	}()
+	})
 }
 
 // probe reads what an I-Am would have said about the device at an address
@@ -290,9 +409,50 @@ func (s *Shifter) probe(addr client.Address) {
 	s.discovered(dev)
 }
 
+// admit says whether an I-Am may change the table: a device the table
+// knows always may; an unknown one takes a token of the admission rate,
+// and is dropped without one. A device heard this run at another address
+// is confirmed first: the old address is probed, and the new one is taken
+// only when the old is silent (S2 of the threat model).
+func (s *Shifter) admit(dev client.Device) bool {
+	rec, known := s.table.Device(dev.Instance)
+	if !known || rec.Referenced {
+		if !s.admission.take() {
+			s.mu.Lock()
+			s.droppedIAms++
+			s.mu.Unlock()
+			s.log.Warn("an I-Am for a new device was dropped: too many new devices this minute", "instance", dev.Instance, "address", dev.Addr)
+			return false
+		}
+		return true
+	}
+	old := rec.Address.Client()
+	if rec.Address == table.AddressOf(dev.Addr) || rec.Address.IsZero() || s.table.Heard(dev.Instance) {
+		return true
+	}
+	// A known instance from a new address, not heard this run: ask the old
+	// address whether it is still there before believing the new one.
+	ctx, cancel := s.requestCtx()
+	defer cancel()
+	_, err := s.site.ReadProperty(ctx, old, client.ObjectID{Type: objects.ObjectTypeDevice, Instance: dev.Instance}, objects.PropertyIdObjectIdentifier)
+	silent := errors.Is(err, client.ErrTimeout) || errors.Is(err, client.ErrNetworkUnreachable)
+	if silent {
+		s.log.Warn("device address changed: the old address is silent, the new one is taken", "instance", dev.Instance, "old", old, "new", dev.Addr)
+		return true
+	}
+	s.mu.Lock()
+	s.refusedMoves++
+	s.mu.Unlock()
+	s.log.Warn("an I-Am claims a known instance from a new address, but the old address still answers; the new one is not taken", "instance", dev.Instance, "old", old, "new", dev.Addr, "answer", err)
+	return false
+}
+
 // discovered gives a device heard from the site its pseudonyms, reads its
 // name, and announces it on the consumer side the first time this run.
 func (s *Shifter) discovered(dev client.Device) {
+	if !s.admit(dev) {
+		return
+	}
 	if dev.Addr.Net != 0 {
 		n, created, err := s.table.EnsureNetwork(dev.Addr.Net)
 		if err != nil {
@@ -320,7 +480,7 @@ func (s *Shifter) discovered(dev client.Device) {
 	}
 	obj := objects.ObjectIdentifier{ObjectType: objects.ObjectTypeDevice, InstanceNumber: dev.Instance}
 	if _, named := s.table.Name(dev.Instance, obj); !named || seen.Created {
-		ctx, cancel := context.WithTimeout(s.ctx, time.Minute)
+		ctx, cancel := s.requestCtx()
 		values, err := s.site.ReadProperty(ctx, dev.Addr, client.ObjectID{Type: objects.ObjectTypeDevice, Instance: dev.Instance}, objects.PropertyIdObjectName)
 		cancel()
 		switch {
@@ -417,24 +577,23 @@ func (s *Shifter) forwardWhoIs() {
 
 // ---- consumers -------------------------------------------------------------
 
+// noteConsumer marks a consumer recent. Only a confirmed request earns it:
+// a Who-Is from a spoofed source would otherwise make the shifter unicast
+// every announcement there.
 func (s *Shifter) noteConsumer(p server.Peer) {
-	s.mu.Lock()
-	s.recent[p.Key()] = recentPeer{peer: p, at: time.Now()}
-	s.mu.Unlock()
+	s.recent.Put(p.Key(), recentPeer{peer: p, at: time.Now()})
 }
 
 func (s *Shifter) recentPeers() []server.Peer {
 	cutoff := time.Now().Add(-s.cfg.Recent)
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	var peers []server.Peer
-	for key, r := range s.recent {
+	s.recent.Each(func(_ string, r recentPeer) bool {
 		if r.at.Before(cutoff) {
-			delete(s.recent, key)
-			continue
+			return false
 		}
 		peers = append(peers, r.peer)
-	}
+		return true
+	})
 	return peers
 }
 
@@ -470,7 +629,6 @@ func (s *Shifter) target(env server.Envelope) (server.Source, table.Device, bool
 // Network implements server.Handler: the shifter answers
 // Who-Is-Router-To-Network for the networks it routes to and nothing else.
 func (s *Shifter) Network(env server.Envelope, m *plumbing.NetworkMessage) {
-	s.noteConsumer(env.Peer)
 	if m.Type != plumbing.NetMsgWhoIsRouterToNetwork {
 		s.log.Debug("dropped a network layer message", "from", env.Peer, "type", fmt.Sprintf("%#x", m.Type))
 		return
@@ -491,7 +649,6 @@ func (s *Shifter) Network(env server.Envelope, m *plumbing.NetworkMessage) {
 
 // Unconfirmed implements server.Handler.
 func (s *Shifter) Unconfirmed(env server.Envelope, apdu *plumbing.APDU) {
-	s.noteConsumer(env.Peer)
 	switch apdu.Service {
 	case services.ServiceUnconfirmedWhoIs:
 		s.whoIs(env, apdu)
@@ -542,19 +699,41 @@ func uintOf(t *objects.Object) uint32 {
 }
 
 // whoIs answers with one routed I-Am per device the envelope and the range
-// select, and forwards a Who-Is to the site.
+// select, and forwards a Who-Is to the site. A source is sent one burst of
+// I-Ams per WhoIsInterval at most: a Who-Is costs the sender one datagram
+// and would otherwise cost whoever it names as its source one per device.
 func (s *Shifter) whoIs(env server.Envelope, apdu *plumbing.APDU) {
+	defer s.forwardWhoIs()
+	// The source is marked before the burst, under the lock, so that a
+	// burst of Who-Is handled at once cannot each find it unmarked.
+	key, now := env.Peer.Key(), time.Now()
+	s.mu.Lock()
+	last, answered := s.whoIsAnswered.Get(key)
+	due := !answered || now.Sub(last) >= s.cfg.WhoIsInterval
+	if due {
+		s.whoIsAnswered.Put(key, now)
+	}
+	s.mu.Unlock()
+	if !due {
+		s.log.Debug("a Who-Is within the interval of the last burst to its source goes unanswered", "from", env.Peer)
+		return
+	}
 	low, high := uint32(0), uint32(translate.Wildcard)
 	if tags := tagsOf(apdu); len(tags) == 2 && isContext(tags[0], 0) && isContext(tags[1], 1) {
 		low, high = uintOf(tags[0]), uintOf(tags[1])
 	}
+	sent := 0
 	for _, d := range s.selectDevices(env) {
 		if d.Virtual < low || d.Virtual > high {
 			continue
 		}
 		s.srv.Unconfirmed(env.Peer, s.source(d), services.ServiceUnconfirmedIAm, s.iAm(d))
+		sent++
 	}
-	s.forwardWhoIs()
+	if sent == 0 {
+		// An empty answer cost nothing: the next Who-Is may be answered.
+		s.whoIsAnswered.Delete(key)
+	}
 }
 
 // whoHas answers from the table with an I-Have for each object the request
@@ -804,10 +983,12 @@ func (s *Shifter) readProperty(req *server.Request, from server.Source, dev tabl
 		values []client.Value
 		err    error
 	)
+	ctx, cancel := s.requestCtx()
+	defer cancel()
 	if index != nil {
-		values, err = s.site.ReadPropertyIndex(s.ctx, to, toClientID(real), uint16(prop), *index)
+		values, err = s.site.ReadPropertyIndex(ctx, to, toClientID(real), uint16(prop), *index)
 	} else {
-		values, err = s.site.ReadProperty(s.ctx, to, toClientID(real), uint16(prop))
+		values, err = s.site.ReadProperty(ctx, to, toClientID(real), uint16(prop))
 	}
 	if err != nil {
 		s.fault(req, from, err)
@@ -860,6 +1041,12 @@ func parseRPM(tags []*objects.Object) ([]rpmSpec, *control.Answer) {
 				return nil, &control.Answer{Reject: true, Reason: objects.RejectReasonMissingRequiredParameter}
 			}
 			if tags[0].Kind == objects.TagClosing {
+				if tags[0].TagNumber != 1 {
+					return nil, &control.Answer{Reject: true, Reason: objects.RejectReasonInvalidTag}
+				}
+				if len(spec.props) == 0 {
+					return nil, &control.Answer{Reject: true, Reason: objects.RejectReasonMissingRequiredParameter}
+				}
 				tags = tags[1:]
 				break
 			}
@@ -908,8 +1095,10 @@ func (s *Shifter) readPropertyMultiple(req *server.Request, from server.Source, 
 	}
 	var results []client.ObjectResult
 	if len(forward) > 0 {
+		ctx, cancel := s.requestCtx()
+		defer cancel()
 		var err error
-		results, err = s.site.ReadPropertyMultiple(s.ctx, dev.Address.Client(), forward)
+		results, err = s.site.ReadPropertyMultiple(ctx, dev.Address.Client(), forward)
 		if err != nil {
 			s.fault(req, from, err)
 			return
@@ -955,46 +1144,58 @@ func (s *Shifter) readPropertyMultiple(req *server.Request, from server.Source, 
 	req.ComplexACK(from, tags)
 }
 
-// readRange forwards a ReadRange and answers with the translated items.
-func (s *Shifter) readRange(req *server.Request, from server.Source, dev table.Device) {
-	obj, prop, index, ans := readHeader(req.Tags)
+// parseReadRange reads a ReadRange: the object [0], property [1] and
+// optional index [2] of a read, then nothing, a range by position between
+// tags 3 or by sequence between tags 6, each a start and a signed count, or
+// a range by time between tags 7, which the client does not send. ans says
+// how to refuse a request that has them wrong. The object is as the
+// consumer gave it.
+func parseReadRange(tags []*objects.Object) (rr client.ReadRangeRequest, ans *control.Answer) {
+	obj, prop, index, ans := readHeader(tags)
 	if ans != nil {
-		s.refuse(req, from, *ans)
-		return
+		return rr, ans
 	}
-	rest := req.Tags[2:]
+	rest := tags[2:]
 	if index != nil {
 		rest = rest[1:]
 	}
-	rr := client.ReadRangeRequest{Object: toClientID(obj), Property: uint16(prop), Index: index}
+	rr = client.ReadRangeRequest{Object: toClientID(obj), Property: uint16(prop), Index: index}
 	switch {
 	case len(rest) == 0:
 	case len(rest) == 4 && rest[0].Kind == objects.TagOpening && (rest[0].TagNumber == 3 || rest[0].TagNumber == 6) &&
 		rest[3].Kind == objects.TagClosing && rest[3].TagNumber == rest[0].TagNumber:
 		start, count := translate.DecodePrimitive(rest[1]), translate.DecodePrimitive(rest[2])
 		if start.Kind != client.KindUnsigned || count.Kind != client.KindSigned {
-			s.refuse(req, from, control.Answer{Reject: true, Reason: objects.RejectReasonInvalidParameterDataType})
-			return
+			return rr, &control.Answer{Reject: true, Reason: objects.RejectReasonInvalidParameterDataType}
 		}
 		rr.Range = client.Range{Kind: client.RangePosition, Start: uint32(start.Uint), Count: int32(count.Int)}
 		if rest[0].TagNumber == 6 {
 			rr.Range.Kind = client.RangeSequence
 		}
 	case rest[0].Kind == objects.TagOpening && rest[0].TagNumber == 7:
-		// A range by time: the client does not send one.
-		s.refuse(req, from, control.RejectOther)
-		return
+		return rr, &control.RejectOther
 	default:
-		s.refuse(req, from, control.Answer{Reject: true, Reason: objects.RejectReasonInvalidTag})
+		return rr, &control.Answer{Reject: true, Reason: objects.RejectReasonInvalidTag}
+	}
+	return rr, nil
+}
+
+// readRange forwards a ReadRange and answers with the translated items.
+func (s *Shifter) readRange(req *server.Request, from server.Source, dev table.Device) {
+	rr, ans := parseReadRange(req.Tags)
+	if ans != nil {
+		s.refuse(req, from, *ans)
 		return
 	}
-	real, ok := s.upstreamObject(obj)
+	real, ok := s.upstreamObject(toObjectID(rr.Object))
 	if !ok {
 		req.Error(from, uint32(objects.ErrorClassObject), uint32(control.ErrorCodeUnknownObject))
 		return
 	}
 	rr.Object = toClientID(real)
-	res, err := s.site.ReadRange(s.ctx, dev.Address.Client(), rr)
+	ctx, cancel := s.requestCtx()
+	defer cancel()
+	res, err := s.site.ReadRange(ctx, dev.Address.Client(), rr)
 	if err != nil {
 		s.fault(req, from, err)
 		return

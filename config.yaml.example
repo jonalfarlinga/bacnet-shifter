@@ -15,6 +15,9 @@ site:
   max_in_flight_net: 1    # requests in flight at once to all the devices of one routed site network
   whois_interval: 1s      # a consumer's Who-Is is forwarded to the site at most this often
   cov_lifetime: 5m        # lifetime of the shifter's own subscriptions on the site, renewed by the client
+  max_subscriptions_per_device: 16 # the shifter's own subscriptions to one site device; beyond it a SubscribeCOV is refused
+  max_subscriptions: 2048 # the shifter's own subscriptions on the whole site
+  max_new_devices_per_minute: 60 # new devices admitted to the table from I-Ams; beyond it an unknown device's I-Am is dropped
 
 # The consumer side: the socket the shifter serves consumers on, as a router to the virtual network.
 consumer:
@@ -23,6 +26,11 @@ consumer:
   network: 9000           # V: the virtual network the site's own IP subnet appears as; each site network behind a router gets a derived number of its own
   recent: 10m             # a new device or network is also announced by unicast to every consumer heard from within this long
   cov_max_lifetime: 24h   # ceiling on a consumer subscription's lifetime; 0 or absent in the request means this
+  max_in_flight: 64       # consumer requests being handled at once; beyond it a request is dropped
+  max_rps_per_source: 20  # requests taken from one consumer address in a second, with a burst of the same; beyond it they are dropped
+  max_sources: 1024       # consumer addresses tracked for the rate limit, the recent peers and the subscriptions; the oldest is forgotten for a new one
+  max_subscriptions_per_source: 256 # COV subscriptions one consumer address may hold; beyond it a SubscribeCOV is refused
+  segment_timeout: 4s     # wait for the next Segment-ACK of a segmented reply before it is aborted
 
 # What the shifter will send to the site: no-write | limited | full-service.
 # Each level includes the ones before it.
