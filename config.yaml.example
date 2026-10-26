@@ -98,3 +98,13 @@ reserved:
     - notify-type
     - recipient-list
     - ack-required
+
+# What full-service may write: nothing until an entry covers it. Each entry names an object type or "*",
+# a property or "*", and optionally device (a virtual device instance) and consumer (a source prefix).
+writes:
+  allow: []               # [{object: analog-value, property: present-value}, {object: "*", property: "*", device: 3410122, consumer: 10.8.0.7/32}]
+
+# The audit log: one JSON object per line, appended and never truncated, of every forwarded write, every
+# refusal, every subscription and the level at start. Empty turns it off. Rotation is the operator's.
+audit:
+  file: ""                # a path; the file is created with mode 0600

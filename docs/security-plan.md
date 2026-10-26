@@ -99,7 +99,7 @@ The operator runs an authenticated tunnel between each consumer and the shifter 
 
 ## 5. P4 — Policy and audit
 
-**Rules landed 2026-10-26** in the README (the write allow list among the `full-service` rules, the two rows of the permissions table, the audit log under Running) and in the threat model (T2, R1 and R2 held, A6, claims 7 and 8 of §8, decision 4 taken); the code follows.
+**Rules landed 2026-10-26** in the README (the write allow list among the `full-service` rules, the two rows of the permissions table, the audit log under Running) and in the threat model (T2, R1 and R2 held, A6, claims 7 and 8 of §8, decision 4 taken); the code the same day. Where the build departs from the text below: an entry's device is one virtual instance, not a prefix of instances, since virtual instances are derived and a prefix of them means nothing; `*` is taken for the object type as well as the property, so a site can say "everything" in one entry; the allow list is the last of the write rules, after the priority rule, so the floor is judged first and the audit record names the rule that refused; the audit log records subscriptions made, renewed, cancelled and lapsed, and the start line, but not a change of level, since the level changes only with a restart; the allow-list drop summary is one line a minute with the count and the sources the server last logged; a line the queue of a thousand could not take is counted in the next line rather than blocking a consumer.
 
 ### 5.1 The write allow list
 

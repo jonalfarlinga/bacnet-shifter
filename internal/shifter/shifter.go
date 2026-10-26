@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/jonalfarlinga/bacnet/plumbing"
 	"github.com/jonalfarlinga/bacnet/services"
 
+	"github.com/jonalfarlinga/bacnet-shifter/internal/audit"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/control"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/server"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/survey"
@@ -102,6 +104,11 @@ type Config struct {
 	Control  control.Level
 	Peers    []Peer
 	Reserved control.Reserved
+	// WriteAllow is the write allow list; nil covers nothing, so that
+	// full-service writes nothing until the operator lists what may be.
+	WriteAllow control.WriteAllow
+	// Audit is the audit log; nil records nothing.
+	Audit *audit.Log
 	// PassThrough is the properties whose character strings cross as they
 	// are; every other string is replaced. Hidden is the object types that
 	// do not exist on the consumer side; nil is control.DefaultHidden.
@@ -332,10 +339,13 @@ func Start(cfg Config) (*Shifter, error) {
 	if s.writer == nil {
 		s.writer = site
 	}
-	s.log.Info("shifter started", "site", site.Local(), "consumer", srv.Local(), "control", cfg.Control, "network", s.table.V(), "peers", len(cfg.Peers))
+	s.log.Info("shifter started", "site", site.Local(), "consumer", srv.Local(), "control", cfg.Control, "network", s.table.V(), "peers", len(cfg.Peers), "writes_allowed", len(cfg.WriteAllow))
 	if len(cfg.Consumer.Allow) == 0 {
 		s.log.Warn("consumer.allow is empty: every source that reaches the consumer socket is served; set it to the tunnel's prefix before the shifter is relied on as a boundary")
 	}
+	s.cfg.Audit.Record(audit.Entry{Event: audit.EventStart, Control: cfg.Control.String(),
+		Detail: fmt.Sprintf("consumer.allow %v, %d peers %s, %d writes.allow entries", cfg.Consumer.Allow, len(cfg.Peers), describePeers(cfg.Peers), len(cfg.WriteAllow))})
+	s.spawn("audit of dropped sources", nil, s.auditDropped)
 
 	// A router announces itself and its networks when it comes up.
 	s.announceRouter(s.table.VirtualNetworks())
@@ -589,6 +599,15 @@ func (s *Shifter) hidden(id objects.ObjectIdentifier) bool { return s.cfg.Hidden
 // object at all, and logs it: the consumer must not learn the type exists.
 func (s *Shifter) refuseHidden(req *server.Request, from server.Source, id objects.ObjectIdentifier) {
 	s.log.Info("refused a request for a hidden object", "from", req.Peer, "service", control.ServiceName(req.Service), "object", objectName(id))
+	s.unknownObject(req, from, table.Device{}, "hidden object")
+}
+
+// unknownObject answers a request as one naming no object, and records
+// why: a hidden object, or a device instance the shifter never issued.
+func (s *Shifter) unknownObject(req *server.Request, from server.Source, dev table.Device, why string) {
+	e := s.auditEntry(req, dev, audit.EventRefused)
+	e.Outcome, e.Detail = "Error object unknown-object", why
+	s.cfg.Audit.Record(e)
 	req.Error(from, uint32(objects.ErrorClassObject), uint32(control.ErrorCodeUnknownObject))
 }
 
@@ -839,16 +858,88 @@ func (s *Shifter) whoHas(env server.Envelope, apdu *plumbing.APDU) {
 	}
 }
 
-// levelOf is the level a consumer is served at: that of the first Peers
-// entry its source is within, or the global one. A routed consumer is
-// judged by its router's address, which is what the tunnel identifies.
-func (s *Shifter) levelOf(p server.Peer) control.Level {
+// peerOf is the Peers entry a consumer's source is within, if any, and
+// the level it is served at: the entry's, or the global one. A routed
+// consumer is judged by its router's address, which is what the tunnel
+// identifies.
+func (s *Shifter) peerOf(p server.Peer) (prefix string, level control.Level) {
 	for _, e := range s.cfg.Peers {
 		if e.Prefix.Contains(p.IP.Addr()) {
-			return e.Control
+			return e.Prefix.String(), e.Control
 		}
 	}
-	return s.cfg.Control
+	return "", s.cfg.Control
+}
+
+// levelOf is the level a consumer is served at.
+func (s *Shifter) levelOf(p server.Peer) control.Level {
+	_, level := s.peerOf(p)
+	return level
+}
+
+func describePeers(peers []Peer) string {
+	if len(peers) == 0 {
+		return "[]"
+	}
+	parts := make([]string, len(peers))
+	for i, p := range peers {
+		parts[i] = fmt.Sprintf("%v=%s", p.Prefix, p.Control)
+	}
+	return "[" + strings.Join(parts, " ") + "]"
+}
+
+// auditEntry starts an audit line for a request: the consumer, its peer
+// entry and level, the service, the device, and the object and property
+// when the request's tags start with them.
+func (s *Shifter) auditEntry(req *server.Request, dev table.Device, event string) audit.Entry {
+	prefix, level := s.peerOf(req.Peer)
+	e := audit.Entry{Event: event, Peer: req.Peer.String(), Prefix: prefix, Control: level.String(),
+		Service: control.ServiceName(req.Service), Device: dev.Virtual, Real: dev.Instance}
+	// A read, a write and a range start with the object [0], the property
+	// [1] and perhaps an index [2]; a subscription with the process [0]
+	// and the object [1].
+	objTag, propTag := 0, 1
+	if req.Service == services.ServiceConfirmedSubscribeCOV {
+		objTag, propTag = 1, -1
+	}
+	if len(req.Tags) > objTag {
+		if id, ok := translate.ObjectID(req.Tags[objTag]); ok {
+			e.Object = objectName(id)
+		}
+	}
+	if propTag >= 0 && len(req.Tags) > propTag && isContext(req.Tags[propTag], 1) {
+		e.Property = control.PropertyName(uintOf(req.Tags[propTag]))
+		if len(req.Tags) > propTag+1 && isContext(req.Tags[propTag+1], 2) {
+			i := uintOf(req.Tags[propTag+1])
+			e.Index = &i
+		}
+	}
+	return e
+}
+
+// auditDropped records, once a minute, the datagrams consumer.allow
+// dropped since the last line, with the sources, until the shifter
+// closes.
+func (s *Shifter) auditDropped() {
+	if s.cfg.Audit == nil {
+		return
+	}
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	var last uint64
+	for {
+		select {
+		case <-ticker.C:
+		case <-s.ctx.Done():
+			return
+		}
+		n, sources := s.srv.AllowDropped()
+		if n == last {
+			continue
+		}
+		s.cfg.Audit.Record(audit.Entry{Event: audit.EventDropped, Outcome: fmt.Sprintf("%d dropped", n-last), Detail: "sources: " + strings.Join(sources, " ")})
+		last = n
+	}
 }
 
 // Confirmed implements server.Handler: the consumer's level decides, then
@@ -886,8 +977,24 @@ func (s *Shifter) Confirmed(req *server.Request) {
 	}
 }
 
-// refuse answers a request with its documented refusal and logs it.
+// refuse answers a request with its documented refusal, logs it, and
+// records it in the audit log with why as the detail.
 func (s *Shifter) refuse(req *server.Request, from server.Source, ans control.Answer) {
+	s.refuseFor(req, from, ans, table.Device{}, "")
+}
+
+// answerName names a refusal for the audit record.
+func answerName(ans control.Answer) string {
+	if ans.Reject {
+		return "Reject " + objects.RejectReasonMap[ans.Reason]
+	}
+	return "Error " + client.ErrorClassName(uint32(ans.Class)) + " " + client.ErrorCodeName(uint32(ans.Code))
+}
+
+func (s *Shifter) refuseFor(req *server.Request, from server.Source, ans control.Answer, dev table.Device, why string) {
+	e := s.auditEntry(req, dev, audit.EventRefused)
+	e.Outcome, e.Detail = answerName(ans), why
+	s.cfg.Audit.Record(e)
 	attrs := []any{"from", req.Peer, "service", control.ServiceName(req.Service), "control", s.levelOf(req.Peer)}
 	if len(req.Tags) >= 1 {
 		if id, ok := translate.ObjectID(req.Tags[0]); ok {
@@ -1071,7 +1178,7 @@ func (s *Shifter) readProperty(req *server.Request, from server.Source, dev tabl
 	real, ok := s.upstreamObject(obj)
 	if !ok {
 		s.log.Info("read of a device the shifter never issued", "from", req.Peer, "object", obj.InstanceNumber)
-		req.Error(from, uint32(objects.ErrorClassObject), uint32(control.ErrorCodeUnknownObject))
+		s.unknownObject(req, from, dev, "unissued device")
 		return
 	}
 	to := dev.Address.Client()
@@ -1342,7 +1449,7 @@ func (s *Shifter) readRange(req *server.Request, from server.Source, dev table.D
 	}
 	real, ok := s.upstreamObject(toObjectID(rr.Object))
 	if !ok {
-		req.Error(from, uint32(objects.ErrorClassObject), uint32(control.ErrorCodeUnknownObject))
+		s.unknownObject(req, from, dev, "unissued device")
 		return
 	}
 	rr.Object = toClientID(real)

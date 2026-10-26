@@ -78,6 +78,31 @@ type File struct {
 		Objects    []string `yaml:"objects"`
 		Properties []string `yaml:"properties"`
 	} `yaml:"reserved"`
+	Writes struct {
+		Allow []WriteEntry `yaml:"allow"`
+	} `yaml:"writes"`
+	Audit struct {
+		File string `yaml:"file"`
+	} `yaml:"audit"`
+}
+
+// WriteEntry is one entry of writes.allow: an object type or "*", a
+// property or "*", and optionally a virtual device instance and a consumer
+// prefix.
+type WriteEntry struct {
+	Object   string `yaml:"object"`
+	Property string `yaml:"property"`
+	Device   string `yaml:"device,omitempty"`
+	Consumer string `yaml:"consumer,omitempty"`
+}
+
+// parseWriteAllow resolves writes.allow.
+func parseWriteAllow(entries []WriteEntry) (control.WriteAllow, error) {
+	names := make([]control.WriteEntryNames, len(entries))
+	for i, e := range entries {
+		names[i] = control.WriteEntryNames{Object: e.Object, Property: e.Property, Device: e.Device, Consumer: e.Consumer}
+	}
+	return control.ParseWriteAllow(names)
 }
 
 // PeerEntry is one entry of consumer.peers: the consumers within Prefix
@@ -124,6 +149,7 @@ func Defaults() File {
 	f.Reserved.Services = append([]string(nil), control.DefaultReservedNames.Services...)
 	f.Reserved.Objects = append([]string(nil), control.DefaultReservedNames.Objects...)
 	f.Reserved.Properties = append([]string(nil), control.DefaultReservedNames.Properties...)
+	f.Writes.Allow = []WriteEntry{}
 	return f
 }
 
@@ -219,6 +245,9 @@ func (f File) Validate() error {
 	if strings.TrimSpace(f.Data) == "" {
 		return errors.New("data is not set")
 	}
+	if _, err := parseWriteAllow(f.Writes.Allow); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -266,6 +295,14 @@ func parsePeers(list []PeerEntry, global control.Level) ([]shifter.Peer, error) 
 		out = append(out, shifter.Peer{Prefix: p, Control: level})
 	}
 	return out, nil
+}
+
+// quoteStar quotes "*" for YAML, which reads a bare one as an alias.
+func quoteStar(s string) string {
+	if s == "*" {
+		return `"*"`
+	}
+	return s
 }
 
 // parseAddrPort reads an IP with an optional port.
@@ -411,5 +448,29 @@ func Render(f File) string {
 	list(1, "services", f.Reserved.Services, "")
 	list(1, "objects", f.Reserved.Objects, "")
 	list(1, "properties", f.Reserved.Properties, "")
+	b.WriteString("\n")
+	b.WriteString("# What full-service may write: nothing until an entry covers it. Each entry names an object type or \"*\",\n")
+	b.WriteString("# a property or \"*\", and optionally device (a virtual device instance) and consumer (a source prefix).\n")
+	b.WriteString("writes:\n")
+	if len(f.Writes.Allow) == 0 {
+		line(1, "allow", "[]", "[{object: analog-value, property: present-value}, {object: \"*\", property: \"*\", device: 3410122, consumer: 10.8.0.7/32}]")
+	} else {
+		line(1, "allow", "", "")
+		for _, e := range f.Writes.Allow {
+			entry := fmt.Sprintf("{object: %s, property: %s", quoteStar(e.Object), quoteStar(e.Property))
+			if e.Device != "" {
+				entry += ", device: " + e.Device
+			}
+			if e.Consumer != "" {
+				entry += ", consumer: " + e.Consumer
+			}
+			b.WriteString("    - " + entry + "}\n")
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString("# The audit log: one JSON object per line, appended and never truncated, of every forwarded write, every\n")
+	b.WriteString("# refusal, every subscription and the level at start. Empty turns it off. Rotation is the operator's.\n")
+	b.WriteString("audit:\n")
+	line(1, "file", quoted(f.Audit.File), "a path; the file is created with mode 0600")
 	return b.String()
 }

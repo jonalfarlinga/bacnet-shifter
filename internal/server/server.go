@@ -331,6 +331,17 @@ func (s *Server) Dropped() Dropped {
 	return Dropped{InFlight: s.droppedInFlight.Load(), Rate: s.droppedRate.Load(), Panics: s.panics.Load(), Allow: s.droppedAllow.Load()}
 }
 
+// AllowDropped is how many datagrams Allow dropped since the server
+// opened, and the sources dropped most recently.
+func (s *Server) AllowDropped() (uint64, []string) {
+	var sources []string
+	s.allowLogged.Each(func(key string, _ time.Time) bool {
+		sources = append(sources, key)
+		return true
+	})
+	return s.droppedAllow.Load(), sources
+}
+
 // allowed reports whether a source is served: any when Allow is empty,
 // otherwise one within a listed prefix. A source that is not is counted
 // and logged at Debug once a minute.

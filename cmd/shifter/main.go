@@ -30,6 +30,7 @@ import (
 	"github.com/jonalfarlinga/bacnet/client"
 	"github.com/jonalfarlinga/bacnet/client/sim"
 
+	"github.com/jonalfarlinga/bacnet-shifter/internal/audit"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/control"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/pseudonym"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/shifter"
@@ -145,6 +146,17 @@ func build(f File, logger *slog.Logger, tb *table.Table) (cfg shifter.Config, cl
 	}
 	if cfg.Peers, err = parsePeers(f.Consumer.Peers, cfg.Control); err != nil {
 		return cfg, cleanup, err
+	}
+	if cfg.WriteAllow, err = parseWriteAllow(f.Writes.Allow); err != nil {
+		return cfg, cleanup, err
+	}
+	if f.Audit.File != "" {
+		log, err := audit.Open(f.Audit.File)
+		if err != nil {
+			return cfg, cleanup, err
+		}
+		cfg.Audit = log
+		cleanup = func() { log.Close() }
 	}
 	if cfg.Control, err = control.Parse(f.Control); err != nil {
 		return cfg, cleanup, err

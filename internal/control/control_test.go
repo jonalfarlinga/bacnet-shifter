@@ -1,6 +1,7 @@
 package control
 
 import (
+	"net/netip"
 	"testing"
 
 	"github.com/jonalfarlinga/bacnet/objects"
@@ -135,9 +136,58 @@ func TestWriteRules(t *testing.T) {
 		{"a number to a replaced property", FullService, Write{Object: setpoint, Property: name}, 13, Answer{Forward: true}},
 		{"a reserved object at 16", FullService, Write{Object: alarms, Property: oos, Priority: u8(16)}, 0, WriteDenied},
 	} {
-		priority, ans := tc.level.Write(tc.w, reserved, passThrough, false)
-		if priority != tc.priority || ans != tc.ans {
-			t.Errorf("%s: priority %d, %+v; want %d, %+v", tc.name, priority, ans, tc.priority, tc.ans)
+		priority, ans, rule := tc.level.Write(tc.w, WritePolicy{Reserved: reserved, PassThrough: passThrough, Allow: WriteAllowAll()})
+		if priority != tc.priority || ans != tc.ans || (rule == "") != ans.Forward {
+			t.Errorf("%s: priority %d, %+v, %q; want %d, %+v", tc.name, priority, ans, rule, tc.priority, tc.ans)
+		}
+	}
+
+	// The write allow list, last of the rules: empty covers nothing; an
+	// entry matches on type, property, and the device and consumer it
+	// names.
+	src := netip.MustParseAddr("10.8.0.7")
+	w := Write{Object: setpoint, Property: pv, Device: 777, Source: src}
+	if _, ans, rule := FullService.Write(w, WritePolicy{Reserved: reserved}); ans != WriteDenied || rule != RuleAllow {
+		t.Errorf("an empty allow list: %+v, %q", ans, rule)
+	}
+	dev := uint32(777)
+	for _, tc := range []struct {
+		name  string
+		entry WriteEntry
+		w     Write
+		ok    bool
+	}{
+		{"type and property", WriteEntry{Object: objects.ObjectTypeAnalogValue, Property: pv}, w, true},
+		{"other property", WriteEntry{Object: objects.ObjectTypeAnalogValue, Property: oos}, w, false},
+		{"any property", WriteEntry{Object: objects.ObjectTypeAnalogValue, AnyProperty: true}, w, true},
+		{"any object", WriteEntry{AnyObject: true, Property: pv}, w, true},
+		{"the device", WriteEntry{Object: objects.ObjectTypeAnalogValue, Property: pv, Device: &dev}, w, true},
+		{"another device", WriteEntry{Object: objects.ObjectTypeAnalogValue, Property: pv, Device: &dev}, Write{Object: setpoint, Property: pv, Device: 778, Source: src}, false},
+		{"the consumer", WriteEntry{Object: objects.ObjectTypeAnalogValue, Property: pv, Consumer: netip.MustParsePrefix("10.8.0.0/24")}, w, true},
+		{"another consumer", WriteEntry{Object: objects.ObjectTypeAnalogValue, Property: pv, Consumer: netip.MustParsePrefix("10.9.0.0/24")}, w, false},
+	} {
+		_, ans, _ := FullService.Write(tc.w, WritePolicy{Reserved: reserved, Allow: WriteAllow{tc.entry}})
+		if ans.Forward != tc.ok {
+			t.Errorf("%s: forwarded %t, want %t", tc.name, ans.Forward, tc.ok)
+		}
+	}
+	// The floor stays under the list.
+	if _, ans, rule := FullService.Write(Write{Object: setpoint, Property: oos, Priority: u8(16)}, WritePolicy{Reserved: reserved, Allow: WriteAllowAll()}); ans != WriteDenied || rule != RuleReserved {
+		t.Errorf("an allow-all list let a reserved property through: %+v, %q", ans, rule)
+	}
+	allow, err := ParseWriteAllow([]WriteEntryNames{{Object: "analog-value", Property: "present-value"}, {Object: "*", Property: "*", Device: "777", Consumer: "10.8.0.7"}})
+	if err != nil || len(allow) != 2 || !allow[1].AnyObject || allow[1].Device == nil || *allow[1].Device != 777 || allow[1].Consumer.Bits() != 32 {
+		t.Errorf("parsed %+v, %v", allow, err)
+	}
+	for _, bad := range [][]WriteEntryNames{
+		{{Object: "no-such-type", Property: "present-value"}},
+		{{Object: "analog-value", Property: "no-such-property"}},
+		{{Object: "analog-value", Property: "present-value", Device: "x"}},
+		{{Object: "analog-value", Property: "present-value", Consumer: "everyone"}},
+		{{Property: "present-value"}},
+	} {
+		if _, err := ParseWriteAllow(bad); err == nil {
+			t.Errorf("%+v was accepted", bad)
 		}
 	}
 

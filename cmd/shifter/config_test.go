@@ -83,6 +83,21 @@ func TestLoad(t *testing.T) {
 	if peers, _ := parsePeers(f.Consumer.Peers, 1); len(peers) != 2 || peers[0].Control != 0 || peers[1].Control != 1 {
 		t.Errorf("consumer.peers parsed as %+v", peers)
 	}
+	// The write allow list and the audit file, and their rendering.
+	if err := os.WriteFile(path, []byte("sim: default\nwrites:\n  allow:\n    - {object: analog-value, property: present-value}\n    - {object: \"*\", property: \"*\", device: 3410122, consumer: 10.8.0.7/32}\naudit:\n  file: audit.jsonl\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err = Load(path)
+	if err != nil || f.Validate() != nil {
+		t.Fatalf("the write allow list: %v, %v", err, f.Validate())
+	}
+	if allow, _ := parseWriteAllow(f.Writes.Allow); len(allow) != 2 || !allow[1].AnyObject || allow[1].Device == nil || f.Audit.File != "audit.jsonl" {
+		t.Errorf("writes.allow parsed as %+v, audit %q", allow, f.Audit.File)
+	}
+	var again File
+	if err := yaml.Unmarshal([]byte(Render(f)), &again); err != nil || !reflect.DeepEqual(again.Writes, f.Writes) {
+		t.Errorf("writes.allow does not survive a rendering: %+v, %v", again.Writes, err)
+	}
 	for name, text := range map[string]string{
 		"bad level":    "sim: default\ncontrol: root\n",
 		"bad property": "sim: default\npseudonym:\n  pass_through: [no-such-thing]\n",
@@ -97,6 +112,8 @@ func TestLoad(t *testing.T) {
 		"sim no range": "sim: default\nsurvey:\n  enabled: true\n",
 		"bound off":    "sim: default\nconsumer:\n  max_in_flight: 0\n",
 		"bad allow":    "sim: default\nconsumer:\n  allow: [everyone]\n",
+		"bad write":    "sim: default\nwrites:\n  allow: [{object: no-such-type, property: present-value}]\n",
+		"bad device":   "sim: default\nwrites:\n  allow: [{object: analog-value, property: present-value, device: AHU}]\n",
 		"bad peer":     "sim: default\nconsumer:\n  peers: [{prefix: 10.8.0.0/24, control: root}]\n",
 		"peer above":   "sim: default\ncontrol: limited\nconsumer:\n  peers: [{prefix: 10.8.0.0/24, control: full-service}]\n",
 		"bound below":  "sim: default\nsite:\n  max_new_devices_per_minute: -1\n",

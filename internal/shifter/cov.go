@@ -11,6 +11,7 @@ import (
 	"github.com/jonalfarlinga/bacnet/plumbing"
 	"github.com/jonalfarlinga/bacnet/services"
 
+	"github.com/jonalfarlinga/bacnet-shifter/internal/audit"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/control"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/server"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/table"
@@ -227,7 +228,7 @@ func (s *Shifter) subscribeCOV(req *server.Request, from server.Source, dev tabl
 	}
 	real, ok := s.upstreamObject(obj)
 	if !ok {
-		req.Error(from, uint32(objects.ErrorClassObject), uint32(control.ErrorCodeUnknownObject))
+		s.unknownObject(req, from, dev, "unissued device")
 		return
 	}
 	key := covKey{device: dev.Instance, object: toClientID(real)}
@@ -301,6 +302,10 @@ func (s *Shifter) covSubscribe(req *server.Request, from server.Source, dev tabl
 	s.log.Info("subscription", "from", req.Peer, "process", process, "device", dev.Instance, "virtual", dev.Virtual,
 		"object", fmt.Sprintf("%s %d", objects.ObjectTypeName(key.object.Type), key.object.Instance),
 		"confirmed", confirmed, "lifetime", life, "renewed", existed, "upstream_confirmed", e.confirmed)
+	ae := s.auditEntry(req, dev, audit.EventSubscribe)
+	ae.Outcome = "acked"
+	ae.Detail = fmt.Sprintf("process %d, confirmed %t, lifetime %s, renewed %t", process, confirmed, life, existed)
+	s.cfg.Audit.Record(ae)
 	req.SimpleACK(from)
 	if !upstream && e.last != nil {
 		// The site tells a new subscriber the value as it is; so does the
@@ -316,7 +321,7 @@ func (s *Shifter) covNoSpace(req *server.Request, from server.Source, dev table.
 	s.log.Warn("refused a subscription: a cap is reached", "from", req.Peer, "device", dev.Instance, "virtual", dev.Virtual,
 		"object", fmt.Sprintf("%s %d", objects.ObjectTypeName(key.object.Type), key.object.Instance), "cap", which,
 		"source_held", bySource, "device_held", byDevice, "site_held", upstream)
-	req.Error(from, uint32(control.NoSpace.Class), uint32(control.NoSpace.Code))
+	s.refuseFor(req, from, control.NoSpace, dev, "subscription cap: "+which)
 }
 
 // dropConsumer takes one consumer out of an entry and releases its count.
@@ -398,6 +403,9 @@ func (s *Shifter) covCancel(req *server.Request, from server.Source, key covKey,
 	sub := s.covDropIfEmpty(e)
 	e.mu.Unlock()
 	s.log.Info("subscription cancelled", "from", req.Peer, "process", process, "device", key.device, "object", key.object, "last", sub != nil)
+	ae := s.auditEntry(req, e.dev, audit.EventCancel)
+	ae.Outcome, ae.Detail = "acked", fmt.Sprintf("process %d, cancelled by the consumer, last %t", process, sub != nil)
+	s.cfg.Audit.Record(ae)
 	if sub != nil {
 		s.covCancelUpstream(e.dev, e.object, sub)
 	}
@@ -518,6 +526,9 @@ func (s *Shifter) covSweeper() {
 				if !c.expires.After(now) {
 					s.dropConsumer(e, k)
 					s.log.Info("subscription lapsed", "from", c.peer, "process", c.process, "device", e.dev.Instance, "object", e.object)
+					prefix, level := s.peerOf(c.peer)
+					s.cfg.Audit.Record(audit.Entry{Event: audit.EventCancel, Peer: c.peer.String(), Prefix: prefix, Control: level.String(),
+						Device: e.dev.Virtual, Real: e.dev.Instance, Object: objectName(toObjectID(e.object)), Detail: fmt.Sprintf("process %d, lapsed", c.process)})
 				}
 			}
 			sub := s.covDropIfEmpty(e)

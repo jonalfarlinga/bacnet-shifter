@@ -6,6 +6,7 @@ package control
 
 import (
 	"fmt"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -397,12 +398,37 @@ type Write struct {
 	Priority *uint8
 	// StringValue says the value holds a character string at some depth.
 	StringValue bool
+	// Device is the virtual instance of the device written to, and Source
+	// the consumer's address: what the write allow list matches on.
+	Device uint32
+	Source netip.Addr
 }
 
-// Write applies the level's rules to a WriteProperty, in this order:
-// the level, the array-index rule, the reserved objects and properties and
-// the string rule, then the priority rule. It gives the priority to send
-// the write at, 0 for none, or the refusal.
+// WritePolicy is what the write rules take besides the level: the reserved
+// set, the string rule's inputs, and the write allow list.
+type WritePolicy struct {
+	Reserved    Reserved
+	PassThrough map[uint32]bool
+	Strict      bool
+	Allow       WriteAllow
+}
+
+// The rules a write is refused by, named for the audit record.
+const (
+	RuleLevel         = "level"
+	RulePriorityRange = "priority out of range"
+	RuleIndex         = "array index"
+	RuleString        = "string value"
+	RuleReserved      = "reserved"
+	RulePriority      = "priority below 13"
+	RuleAllow         = "not on writes.allow"
+)
+
+// Write applies the level's rules to a WriteProperty, in this order: the
+// level, the array-index rule, the reserved objects and properties and the
+// string rule, the priority rule, then the write allow list. It gives the
+// priority to send the write at, 0 for none, the refusal, and the name of
+// the rule that refused, empty when the write is forwarded.
 //
 // At full-service a write with no priority goes out at 13, one at 13 to 16
 // keeps its priority, and one at 1 to 12 is refused with
@@ -410,31 +436,149 @@ type Write struct {
 // with Reject other, since the library's write method takes no index; a
 // write to a reserved object or property, or one whose value holds a
 // character string to a property whose strings the shifter replaces, with
-// write-access-denied. A priority that is not 1 to 16 is refused with
-// Reject parameter-out-of-range at every level, before anything is sent.
-func (l Level) Write(w Write, reserved Reserved, passThrough map[uint32]bool, strict bool) (priority uint8, ans Answer) {
+// write-access-denied; and so is one that no entry of the write allow
+// list covers, which with the default empty list is every write. A
+// priority that is not 1 to 16 is refused with Reject
+// parameter-out-of-range at every level, before anything is sent.
+func (l Level) Write(w Write, p WritePolicy) (priority uint8, ans Answer, rule string) {
 	if !l.Forwards(services.ServiceConfirmedWriteProperty) {
-		return 0, Denied
+		return 0, Denied, RuleLevel
 	}
 	if w.Priority != nil && (*w.Priority == 0 || *w.Priority > 16) {
-		return 0, RejectOutOfRange
+		return 0, RejectOutOfRange, RulePriorityRange
 	}
 	if w.Indexed {
-		return 0, RejectOther
+		return 0, RejectOther, RuleIndex
 	}
-	if w.StringValue && !Passes(w.Property, passThrough, strict) {
-		return 0, WriteDenied
+	if w.StringValue && !Passes(w.Property, p.PassThrough, p.Strict) {
+		return 0, WriteDenied, RuleString
 	}
-	if reserved.Objects[w.Object.ObjectType] || reserved.Properties[w.Property] {
-		return 0, WriteDenied
+	if p.Reserved.Objects[w.Object.ObjectType] || p.Reserved.Properties[w.Property] {
+		return 0, WriteDenied, RuleReserved
 	}
+	priority = DefaultWritePriority
 	switch {
 	case w.Priority == nil:
-		return DefaultWritePriority, Answer{Forward: true}
 	case *w.Priority < DefaultWritePriority:
-		return 0, WriteDenied
+		return 0, WriteDenied, RulePriority
+	default:
+		priority = *w.Priority
 	}
-	return *w.Priority, Answer{Forward: true}
+	if !p.Allow.Covers(w) {
+		return 0, WriteDenied, RuleAllow
+	}
+	return priority, Answer{Forward: true}, ""
+}
+
+// ---- the write allow list --------------------------------------------------
+
+// WriteEntry is one entry of writes.allow: the writes it covers name an
+// object of Object's type (any type when AnyObject), Property (any when
+// AnyProperty), the virtual device Device when it is set, and come from a
+// source within Consumer when it is valid.
+type WriteEntry struct {
+	AnyObject   bool
+	Object      uint16
+	AnyProperty bool
+	Property    uint32
+	Device      *uint32
+	Consumer    netip.Prefix
+}
+
+// Covers reports whether the entry covers a write.
+func (e WriteEntry) Covers(w Write) bool {
+	if !e.AnyObject && e.Object != w.Object.ObjectType {
+		return false
+	}
+	if !e.AnyProperty && e.Property != w.Property {
+		return false
+	}
+	if e.Device != nil && *e.Device != w.Device {
+		return false
+	}
+	if e.Consumer.IsValid() && !e.Consumer.Contains(w.Source) {
+		return false
+	}
+	return true
+}
+
+// WriteAllow is the write allow list. Empty covers nothing.
+type WriteAllow []WriteEntry
+
+// Covers reports whether any entry covers the write.
+func (a WriteAllow) Covers(w Write) bool {
+	for _, e := range a {
+		if e.Covers(w) {
+			return true
+		}
+	}
+	return false
+}
+
+// WriteAllowAll is a list that covers every write: for tests, and for a
+// site that wants full-service as it was before the list.
+func WriteAllowAll() WriteAllow { return WriteAllow{{AnyObject: true, AnyProperty: true}} }
+
+// WriteEntryNames is a writes.allow entry as the configuration gives it:
+// names, with "*" for any object type or property, the device as a
+// virtual instance or empty, the consumer as a prefix or empty.
+type WriteEntryNames struct {
+	Object, Property, Device, Consumer string
+}
+
+// ParseWriteAllow resolves the entries of writes.allow.
+func ParseWriteAllow(entries []WriteEntryNames) (WriteAllow, error) {
+	var out WriteAllow
+	for i, n := range entries {
+		var e WriteEntry
+		obj := strings.TrimSpace(n.Object)
+		switch obj {
+		case "*":
+			e.AnyObject = true
+		case "":
+			return nil, fmt.Errorf("writes.allow entry %d: no object type", i+1)
+		default:
+			id, err := ObjectTypeByName(obj)
+			if err != nil {
+				return nil, fmt.Errorf("writes.allow entry %d: %w", i+1, err)
+			}
+			e.Object = id
+		}
+		prop := strings.TrimSpace(n.Property)
+		switch prop {
+		case "*":
+			e.AnyProperty = true
+		case "":
+			return nil, fmt.Errorf("writes.allow entry %d: no property", i+1)
+		default:
+			id, err := PropertyByName(prop)
+			if err != nil {
+				return nil, fmt.Errorf("writes.allow entry %d: %w", i+1, err)
+			}
+			e.Property = id
+		}
+		if d := strings.TrimSpace(n.Device); d != "" && d != "*" {
+			v, err := strconv.ParseUint(d, 10, 32)
+			if err != nil || v > 4194302 {
+				return nil, fmt.Errorf("writes.allow entry %d: device %q is not a virtual device instance", i+1, d)
+			}
+			dev := uint32(v)
+			e.Device = &dev
+		}
+		if c := strings.TrimSpace(n.Consumer); c != "" && c != "*" {
+			p, err := netip.ParsePrefix(c)
+			if err != nil {
+				addr, aerr := netip.ParseAddr(c)
+				if aerr != nil {
+					return nil, fmt.Errorf("writes.allow entry %d: consumer %q is not an IP prefix or address", i+1, c)
+				}
+				p = netip.PrefixFrom(addr, addr.BitLen())
+			}
+			e.Consumer = p
+		}
+		out = append(out, e)
+	}
+	return out, nil
 }
 
 // Sorted lists a set in order, for logs.

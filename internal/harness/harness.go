@@ -21,6 +21,7 @@ import (
 	"github.com/jonalfarlinga/bacnet/plumbing"
 	"github.com/jonalfarlinga/bacnet/services"
 
+	"github.com/jonalfarlinga/bacnet-shifter/internal/audit"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/control"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/pseudonym"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/server"
@@ -80,6 +81,8 @@ type Options struct {
 	Writer shifter.SiteWriter
 	// Survey, if set, is the shifter's survey configuration.
 	Survey *shifter.SurveyConfig
+	// Audit, if set, is the path of the audit file the shifter writes.
+	Audit string
 	// Configure, if set, adjusts the shifter's configuration before it
 	// starts: the bounds, mostly. The bench's own default lifts the
 	// per-source rate limit, since the consumer client reads from one
@@ -98,6 +101,9 @@ type Bench struct {
 	SiteRec, ServerRec, ConsumerRec *Recorder
 	DataDir                         string
 	Key                             pseudonym.Key
+	// Audit is the audit log, when Options.Audit was set; Close flushes
+	// and closes it after the shifter.
+	Audit *audit.Log
 
 	mu    sync.Mutex
 	found map[uint32]client.Device
@@ -149,8 +155,17 @@ func Start(t *testing.T, opts Options) *Bench {
 			Local: netip.MustParseAddrPort("127.0.0.1:0"), Timeout: 500 * time.Millisecond, Retries: 1, OnPacket: b.ServerRec.OnPacket,
 			MaxRPSPerSource: -1,
 		},
-		Control: opts.Control, Reserved: control.DefaultReserved(), Table: tb, Logger: opts.Logger,
+		Control: opts.Control, Reserved: control.DefaultReserved(), WriteAllow: control.WriteAllowAll(), Table: tb, Logger: opts.Logger,
 		WhoIsInterval: opts.WhoIsInterval, Writer: opts.Writer, Survey: opts.Survey,
+	}
+	if opts.Audit != "" {
+		log, err := audit.Open(opts.Audit)
+		if err != nil {
+			network.Close()
+			t.Fatal(err)
+		}
+		b.Audit = log
+		cfg.Audit = log
 	}
 	if opts.Configure != nil {
 		opts.Configure(&cfg)
@@ -191,6 +206,10 @@ func (b *Bench) Close() {
 	if b.Shifter != nil {
 		b.Shifter.Close()
 		b.Shifter = nil
+	}
+	if b.Audit != nil {
+		b.Audit.Close()
+		b.Audit = nil
 	}
 	if b.direct != nil {
 		b.direct.Close()

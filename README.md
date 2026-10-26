@@ -491,7 +491,7 @@ before anything is sent:
   priority that is not 1 to 16 is refused with Reject,
   parameter-out-of-range.
 - **The write allow list.** `writes.allow` is a list of entries, each
-  naming an `object` type and a `property`, with `*` for any property,
+  naming an `object` type and a `property`, either or both `*` for any,
   and optionally a `device`, a virtual device instance, and a `consumer`,
   a source prefix. A write is forwarded only when an entry matches its
   object type, its property, its virtual device if the entry names one,
@@ -647,6 +647,13 @@ devices behind a router, and the survey finding a simulated device that the
 shifter's Who-Is cannot reach. The `internal/survey` tests are the
 utility's, run against the simulated devices with the neighbor table and
 the pings faked; one pings loopback for real, and `-short` skips it.
+
+The write allow list and the audit log are tested together: six writes
+under a list of two entries, covered by type and property, by device and
+consumer, or not at all, with the reserved set refusing under an entry
+that would allow; then the audit file read back, with the start line, one
+line per forwarded write with its outcome and priority, one per refusal
+with its rule, and the subscription made and cancelled.
 
 The consumer side's identity has tests of its own: a consumer outside
 `consumer.allow` hears nothing and the drop is counted; two raw consumers

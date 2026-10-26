@@ -8,6 +8,7 @@ import (
 	"github.com/jonalfarlinga/bacnet/client"
 	"github.com/jonalfarlinga/bacnet/objects"
 
+	"github.com/jonalfarlinga/bacnet-shifter/internal/audit"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/control"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/server"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/table"
@@ -167,6 +168,29 @@ func realMAC(d table.Device) []byte {
 	return []byte{ip[0], ip[1], ip[2], ip[3], byte(a.IP.Port() >> 8), byte(a.IP.Port())}
 }
 
+// writeOutcome names what a forwarded write came back with, for the audit
+// record.
+func writeOutcome(err error) string {
+	var (
+		be *client.BACnetError
+		re *client.RejectError
+		ae *client.AbortError
+	)
+	switch {
+	case errors.As(err, &be):
+		return "Error " + client.ErrorClassName(be.Class) + " " + client.ErrorCodeName(be.Code)
+	case errors.As(err, &re):
+		return "Reject " + objects.RejectReasonMap[re.Reason]
+	case errors.As(err, &ae):
+		return "Abort " + objects.AbortReasonMap[ae.Reason]
+	case errors.Is(err, client.ErrTimeout):
+		return "silence"
+	case errors.Is(err, client.ErrNotSent):
+		return "not sent: " + err.Error()
+	}
+	return err.Error()
+}
+
 func objectName(id objects.ObjectIdentifier) string {
 	return fmt.Sprintf("%s %d", objects.ObjectTypeName(id.ObjectType), id.InstanceNumber)
 }
@@ -189,13 +213,14 @@ func (s *Shifter) writeProperty(req *server.Request, from server.Source, dev tab
 	real, ok := s.upstreamObject(w.obj)
 	if !ok {
 		s.log.Info("write to a device the shifter never issued", "from", req.Peer, "object", w.obj.InstanceNumber)
-		req.Error(from, uint32(objects.ErrorClassObject), uint32(control.ErrorCodeUnknownObject))
+		s.unknownObject(req, from, dev, "unissued device")
 		return
 	}
-	priority, ans2 := s.levelOf(req.Peer).Write(control.Write{Object: w.obj, Property: w.prop, Indexed: w.index != nil, Priority: w.priority, StringValue: w.hasString},
-		s.cfg.Reserved, s.cfg.PassThrough, s.cfg.Strict)
+	priority, ans2, rule := s.levelOf(req.Peer).Write(
+		control.Write{Object: w.obj, Property: w.prop, Indexed: w.index != nil, Priority: w.priority, StringValue: w.hasString, Device: dev.Virtual, Source: req.Peer.IP.Addr()},
+		control.WritePolicy{Reserved: s.cfg.Reserved, PassThrough: s.cfg.PassThrough, Strict: s.cfg.Strict, Allow: s.cfg.WriteAllow})
 	if !ans2.Forward {
-		s.refuse(req, from, ans2)
+		s.refuseFor(req, from, ans2, dev, rule)
 		return
 	}
 	values, err := translate.Decode(w.value)
@@ -208,7 +233,7 @@ func (s *Shifter) writeProperty(req *server.Request, from server.Source, dev tab
 	values = s.upstreamRules(&missing).Values(values)
 	if missing > 0 {
 		s.log.Info("the value of a write names a device or an address the shifter never issued", "from", req.Peer, "object", objectName(w.obj), "property", control.PropertyName(w.prop))
-		s.refuse(req, from, control.Untranslatable)
+		s.refuseFor(req, from, control.Untranslatable, dev, "value names an unissued device or address")
 		return
 	}
 	value := translate.Encode(values)
@@ -216,13 +241,19 @@ func (s *Shifter) writeProperty(req *server.Request, from server.Source, dev tab
 	attrs := []any{"from", req.Peer, "device", dev.Instance, "virtual", dev.Virtual, "object", objectName(real), "property", control.PropertyName(w.prop), "priority", priority}
 	ctx, cancel := s.requestCtx()
 	defer cancel()
+	ae := s.auditEntry(req, dev, audit.EventWrite)
+	ae.Priority = priority
 	if err := s.writer.WriteProperty(ctx, dev.Address.Client(), toClientID(real), uint16(w.prop), value, priority); err != nil {
 		if errors.Is(err, client.ErrNotSent) {
 			s.log.Warn("a write never left the shifter", append(attrs, "error", err)...)
 		}
+		ae.Outcome = writeOutcome(err)
+		s.cfg.Audit.Record(ae)
 		s.fault(req, from, err)
 		return
 	}
 	s.log.Info("write forwarded", attrs...)
+	ae.Outcome = "acked"
+	s.cfg.Audit.Record(ae)
 	req.SimpleACK(from)
 }
