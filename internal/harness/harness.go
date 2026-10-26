@@ -369,9 +369,15 @@ type Received struct {
 }
 
 // NewRaw opens a raw sender on loopback.
-func NewRaw(t *testing.T) *Raw {
+func NewRaw(t *testing.T) *Raw { return NewRawAt(t, netip.MustParseAddr("127.0.0.1")) }
+
+// NewRawAt opens a raw sender at a loopback address of choice: 127.0.0.2,
+// say, for a consumer that must come from another prefix than the rest.
+// The whole of 127.0.0.0/8 is loopback on Windows and Linux; macOS needs
+// the address aliased first.
+func NewRawAt(t *testing.T, ip netip.Addr) *Raw {
 	t.Helper()
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	conn, err := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(netip.AddrPortFrom(ip, 0)))
 	if err != nil {
 		t.Fatal(err)
 	}

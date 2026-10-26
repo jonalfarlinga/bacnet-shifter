@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/netip"
 	"sort"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/jonalfarlinga/bacnet-shifter/internal/control"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/harness"
+	"github.com/jonalfarlinga/bacnet-shifter/internal/shifter"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/table"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/translate"
 )
@@ -457,7 +459,25 @@ var levelList = map[control.Level][]string{
 }
 
 func guardAt(t *testing.T, level control.Level) {
-	b := harness.Start(t, harness.Options{Control: level})
+	guardBody(t, harness.Start(t, harness.Options{Control: level}), level)
+}
+
+// The guard test again, per peer level: the global level is full-service
+// and the test's consumers, all on loopback, get the level from a
+// consumer.peers entry. The dispatch holds them to it, and the site sees
+// only that level's list.
+func TestGuardPerPeer(t *testing.T) {
+	for _, level := range []control.Level{control.NoWrite, control.Limited} {
+		t.Run(level.String(), func(t *testing.T) {
+			b := harness.Start(t, harness.Options{Control: control.FullService, Configure: func(cfg *shifter.Config) {
+				cfg.Peers = []shifter.Peer{{Prefix: netip.MustParsePrefix("127.0.0.0/8"), Control: level}}
+			}})
+			guardBody(t, b, level)
+		})
+	}
+}
+
+func guardBody(t *testing.T, b *harness.Bench, level control.Level) {
 	heard := b.AwaitDevices(simDevices, 10*time.Second)
 	ctx := b.Ctx()
 	var dev client.Device

@@ -76,7 +76,7 @@ Test 1 in its new form, test 2 adjusted, the new unit test; README's permissions
 
 ## 4. P3 — Consumer identity
 
-**Rules landed 2026-10-26** in the README (the setup section on the consumer side, the per-consumer sentence over the permissions table and its allow-list row) and in the threat model (S1, I10 and R1, assumption 8, claim 6 of §8, decisions 2 and 3 taken); the code follows.
+**Rules landed 2026-10-26** in the README (the setup section on the consumer side, the per-consumer sentence over the permissions table and its allow-list row) and in the threat model (S1, I10 and R1, assumption 8, claim 6 of §8, decisions 2 and 3 taken); the code the same day. Where the build departs from the text below: the allow list is checked in the server's read loop on the datagram's IP source, so a routed consumer is judged by its router's address, which is what a tunnel identifies; the per-peer level is likewise matched on the IP source; the log line for a dropped source is kept to one a minute per source through a bounded map, so a flood of spoofed sources cannot grow it; and a bare address in `consumer.allow` or a peer prefix is taken as a prefix of its own.
 
 BACnet/IP cannot authenticate a sender, and the shifter should not try to add a scheme of its own to it. The identity comes from below the protocol, now, and from BACnet/SC, later (P6).
 

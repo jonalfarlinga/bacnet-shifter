@@ -31,6 +31,8 @@ consumer:
   max_sources: 1024       # consumer addresses tracked for the rate limit, the recent peers and the subscriptions; the oldest is forgotten for a new one
   max_subscriptions_per_source: 256 # COV subscriptions one consumer address may hold; beyond it a SubscribeCOV is refused
   segment_timeout: 4s     # wait for the next Segment-ACK of a segmented reply before it is aborted
+  allow: []               # source prefixes served, the tunnel's; empty serves every source, with a warning at start
+  peers: []               # a level per source prefix, first match wins, none above control: [{prefix: 10.8.0.7/32, control: no-write}]
 
 # What the shifter will send to the site: no-write | limited | full-service.
 # Each level includes the ones before it.

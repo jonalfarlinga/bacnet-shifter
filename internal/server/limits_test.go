@@ -293,3 +293,40 @@ func TestCloseWithSegments(t *testing.T) {
 	}
 	_ = context.Background()
 }
+
+// With Allow set, a datagram from a source outside it is dropped before
+// parsing and counted; one within it is served; with Allow empty every
+// source is.
+func TestAllowList(t *testing.T) {
+	h := &slow{release: make(chan struct{})}
+	close(h.release)
+	whoIs := plumbing.NewAPDU(plumbing.UnConfirmedReq, services.ServiceUnconfirmedWhoIs, nil)
+	plain := plumbing.NewNPDU(false, false, false, false)
+	for _, tc := range []struct {
+		name   string
+		allow  []netip.Prefix
+		served bool
+	}{
+		{"empty serves everyone", nil, true},
+		{"loopback is within", []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("127.0.0.0/8")}, true},
+		{"loopback is outside", []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}, false},
+	} {
+		srv := openWith(t, Config{Timeout: 200 * time.Millisecond, MaxRPSPerSource: -1, Allow: tc.allow}, h)
+		h.srv = srv
+		raw := newRaw(t)
+		raw.send(t, srv.Local(), plain, whoIs)
+		raw.send(t, srv.Local(), plain, whoIs)
+		got := raw.receive(t, 300*time.Millisecond) != nil
+		if got != tc.served {
+			t.Errorf("%s: served %t, want %t", tc.name, got, tc.served)
+		}
+		want := uint64(0)
+		if !tc.served {
+			want = 2
+		}
+		if d := srv.Dropped(); d.Allow != want {
+			t.Errorf("%s: %d dropped by the allow list, want %d", tc.name, d.Allow, want)
+		}
+		srv.Close()
+	}
+}

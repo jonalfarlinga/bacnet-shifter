@@ -68,6 +68,21 @@ func TestLoad(t *testing.T) {
 	if f, err := Load(path); err != nil || f.Validate() != nil {
 		t.Errorf("a survey of the whole subnet: %v", err)
 	}
+	// The identity keys: prefixes or bare addresses, and a level per
+	// prefix at or below the global one.
+	if err := os.WriteFile(path, []byte("sim: default\ncontrol: limited\nconsumer:\n  allow: [10.8.0.0/24, 10.8.1.7]\n  peers:\n    - {prefix: 10.8.0.7/32, control: no-write}\n    - {prefix: 10.8.0.0/24, control: limited}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err = Load(path)
+	if err != nil || f.Validate() != nil {
+		t.Fatalf("the identity keys: %v, %v", err, f.Validate())
+	}
+	if allow, _ := parsePrefixes(f.Consumer.Allow); len(allow) != 2 || allow[1].Bits() != 32 {
+		t.Errorf("consumer.allow parsed as %v", allow)
+	}
+	if peers, _ := parsePeers(f.Consumer.Peers, 1); len(peers) != 2 || peers[0].Control != 0 || peers[1].Control != 1 {
+		t.Errorf("consumer.peers parsed as %+v", peers)
+	}
 	for name, text := range map[string]string{
 		"bad level":    "sim: default\ncontrol: root\n",
 		"bad property": "sim: default\npseudonym:\n  pass_through: [no-such-thing]\n",
@@ -81,6 +96,9 @@ func TestLoad(t *testing.T) {
 		"bad range":    "sim: default\nsurvey:\n  ranges: [192.168.1.60-192.168.1.20]\n",
 		"sim no range": "sim: default\nsurvey:\n  enabled: true\n",
 		"bound off":    "sim: default\nconsumer:\n  max_in_flight: 0\n",
+		"bad allow":    "sim: default\nconsumer:\n  allow: [everyone]\n",
+		"bad peer":     "sim: default\nconsumer:\n  peers: [{prefix: 10.8.0.0/24, control: root}]\n",
+		"peer above":   "sim: default\ncontrol: limited\nconsumer:\n  peers: [{prefix: 10.8.0.0/24, control: full-service}]\n",
 		"bound below":  "sim: default\nsite:\n  max_new_devices_per_minute: -1\n",
 	} {
 		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {

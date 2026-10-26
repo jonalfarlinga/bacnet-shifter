@@ -95,7 +95,12 @@ type Config struct {
 	// hold; beyond it its SubscribeCOV is refused. 0 is the default.
 	MaxSubscriptionsPerSource int
 
+	// Control is the global level, the ceiling, and the level the site
+	// client is opened for. Peers gives consumers a level each, by source
+	// prefix, the first match winning; a consumer matching none is served
+	// at Control. No entry may be above Control.
 	Control  control.Level
+	Peers    []Peer
 	Reserved control.Reserved
 	// PassThrough is the properties whose character strings cross as they
 	// are; every other string is replaced. Hidden is the object types that
@@ -108,6 +113,13 @@ type Config struct {
 	// Table is the open table, which carries V.
 	Table  *table.Table
 	Logger *slog.Logger
+}
+
+// Peer is one entry of the per-consumer levels: the consumers whose source
+// is within Prefix are served at Control.
+type Peer struct {
+	Prefix  netip.Prefix
+	Control control.Level
 }
 
 // Shifter is the running proxy.
@@ -226,6 +238,14 @@ func Start(cfg Config) (*Shifter, error) {
 	if cfg.Hidden == nil {
 		cfg.Hidden = control.DefaultHidden()
 	}
+	for _, p := range cfg.Peers {
+		if !p.Prefix.IsValid() {
+			return nil, fmt.Errorf("consumer.peers: %v is not a prefix", p.Prefix)
+		}
+		if p.Control > cfg.Control {
+			return nil, fmt.Errorf("consumer.peers: %v at %s is above control %s, the ceiling", p.Prefix, p.Control, cfg.Control)
+		}
+	}
 	if cfg.MaxSubscriptionsPerSource <= 0 {
 		cfg.MaxSubscriptionsPerSource = DefaultMaxSubscriptionsPerSource
 	}
@@ -312,7 +332,10 @@ func Start(cfg Config) (*Shifter, error) {
 	if s.writer == nil {
 		s.writer = site
 	}
-	s.log.Info("shifter started", "site", site.Local(), "consumer", srv.Local(), "control", cfg.Control, "network", s.table.V())
+	s.log.Info("shifter started", "site", site.Local(), "consumer", srv.Local(), "control", cfg.Control, "network", s.table.V(), "peers", len(cfg.Peers))
+	if len(cfg.Consumer.Allow) == 0 {
+		s.log.Warn("consumer.allow is empty: every source that reaches the consumer socket is served; set it to the tunnel's prefix before the shifter is relied on as a boundary")
+	}
 
 	// A router announces itself and its networks when it comes up.
 	s.announceRouter(s.table.VirtualNetworks())
@@ -816,7 +839,20 @@ func (s *Shifter) whoHas(env server.Envelope, apdu *plumbing.APDU) {
 	}
 }
 
-// Confirmed implements server.Handler: the level decides, then the service.
+// levelOf is the level a consumer is served at: that of the first Peers
+// entry its source is within, or the global one. A routed consumer is
+// judged by its router's address, which is what the tunnel identifies.
+func (s *Shifter) levelOf(p server.Peer) control.Level {
+	for _, e := range s.cfg.Peers {
+		if e.Prefix.Contains(p.IP.Addr()) {
+			return e.Control
+		}
+	}
+	return s.cfg.Control
+}
+
+// Confirmed implements server.Handler: the consumer's level decides, then
+// the service.
 func (s *Shifter) Confirmed(req *server.Request) {
 	s.noteConsumer(req.Peer)
 	from, dev, ok := s.target(req.Envelope)
@@ -824,11 +860,12 @@ func (s *Shifter) Confirmed(req *server.Request) {
 		req.Drop()
 		return
 	}
-	if ans := s.cfg.Control.Confirmed(req.Service); !ans.Forward {
+	level := s.levelOf(req.Peer)
+	if ans := level.Confirmed(req.Service); !ans.Forward {
 		s.refuse(req, from, ans)
 		return
 	}
-	if s.cfg.Control.ReservedService(req.Service, s.cfg.Reserved) {
+	if level.ReservedService(req.Service, s.cfg.Reserved) {
 		s.refuse(req, from, control.Denied)
 		return
 	}
@@ -851,7 +888,7 @@ func (s *Shifter) Confirmed(req *server.Request) {
 
 // refuse answers a request with its documented refusal and logs it.
 func (s *Shifter) refuse(req *server.Request, from server.Source, ans control.Answer) {
-	attrs := []any{"from", req.Peer, "service", control.ServiceName(req.Service), "control", s.cfg.Control}
+	attrs := []any{"from", req.Peer, "service", control.ServiceName(req.Service), "control", s.levelOf(req.Peer)}
 	if len(req.Tags) >= 1 {
 		if id, ok := translate.ObjectID(req.Tags[0]); ok {
 			attrs = append(attrs, "object", fmt.Sprintf("%s %d", objects.ObjectTypeName(id.ObjectType), id.InstanceNumber))

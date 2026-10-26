@@ -192,7 +192,7 @@ func (s *Shifter) writeProperty(req *server.Request, from server.Source, dev tab
 		req.Error(from, uint32(objects.ErrorClassObject), uint32(control.ErrorCodeUnknownObject))
 		return
 	}
-	priority, ans2 := s.cfg.Control.Write(control.Write{Object: w.obj, Property: w.prop, Indexed: w.index != nil, Priority: w.priority, StringValue: w.hasString},
+	priority, ans2 := s.levelOf(req.Peer).Write(control.Write{Object: w.obj, Property: w.prop, Indexed: w.index != nil, Priority: w.priority, StringValue: w.hasString},
 		s.cfg.Reserved, s.cfg.PassThrough, s.cfg.Strict)
 	if !ans2.Forward {
 		s.refuse(req, from, ans2)

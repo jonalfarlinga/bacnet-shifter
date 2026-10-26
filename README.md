@@ -588,6 +588,15 @@ shifter's Who-Is cannot reach. The `internal/survey` tests are the
 utility's, run against the simulated devices with the neighbor table and
 the pings faked; one pings loopback for real, and `-short` skips it.
 
+The consumer side's identity has tests of its own: a consumer outside
+`consumer.allow` hears nothing and the drop is counted; two raw consumers
+on 127.0.0.2 and 127.0.0.3, one listed at `no-write` and one at
+`full-service` under a global `full-service`, get the documented refusal
+and the forwarded write respectively, an unlisted one the global level,
+and a `consumer.peers` entry above `control` does not start; and the guard
+test runs again at each level given through `consumer.peers` under a
+global `full-service`.
+
 The bounds have tests of their own in `internal/shifter`: a flood of
 thousands of datagrams from forty source ports, during which the
 goroutine count and the heap stay under a fixed bound and after which an

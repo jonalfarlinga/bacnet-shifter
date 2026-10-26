@@ -140,6 +140,12 @@ func build(f File, logger *slog.Logger, tb *table.Table) (cfg shifter.Config, cl
 	}
 	cfg.Consumer.MaxInFlight, cfg.Consumer.MaxRPSPerSource = f.Consumer.MaxInFlight, f.Consumer.MaxRPSPerSource
 	cfg.Consumer.MaxSources, cfg.Consumer.SegmentTimeout = f.Consumer.MaxSources, f.Consumer.SegmentTimeout
+	if cfg.Consumer.Allow, err = parsePrefixes(f.Consumer.Allow); err != nil {
+		return cfg, cleanup, fmt.Errorf("consumer.allow: %w", err)
+	}
+	if cfg.Peers, err = parsePeers(f.Consumer.Peers, cfg.Control); err != nil {
+		return cfg, cleanup, err
+	}
 	if cfg.Control, err = control.Parse(f.Control); err != nil {
 		return cfg, cleanup, err
 	}

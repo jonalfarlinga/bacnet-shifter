@@ -50,6 +50,9 @@ type File struct {
 		MaxSources                int           `yaml:"max_sources"`
 		MaxSubscriptionsPerSource int           `yaml:"max_subscriptions_per_source"`
 		SegmentTimeout            time.Duration `yaml:"segment_timeout"`
+		// The identity keys of the security plan's P3.
+		Allow []string    `yaml:"allow"`
+		Peers []PeerEntry `yaml:"peers"`
 	} `yaml:"consumer"`
 	Control string `yaml:"control"`
 	Data    string `yaml:"data"`
@@ -77,6 +80,13 @@ type File struct {
 	} `yaml:"reserved"`
 }
 
+// PeerEntry is one entry of consumer.peers: the consumers within Prefix
+// are served at Control.
+type PeerEntry struct {
+	Prefix  string `yaml:"prefix"`
+	Control string `yaml:"control"`
+}
+
 // Defaults is the defaults table: every key at its default.
 func Defaults() File {
 	var f File
@@ -101,6 +111,8 @@ func Defaults() File {
 	f.Consumer.MaxSources = server.DefaultMaxSources
 	f.Consumer.MaxSubscriptionsPerSource = shifter.DefaultMaxSubscriptionsPerSource
 	f.Consumer.SegmentTimeout = server.DefaultSegmentTimeout
+	f.Consumer.Allow = []string{}
+	f.Consumer.Peers = []PeerEntry{}
 	f.Control = control.NoWrite.String()
 	f.Data = "data"
 	f.Log.Level = "info"
@@ -130,7 +142,14 @@ func Load(path string) (File, error) {
 
 // Validate checks what can be checked without opening anything.
 func (f File) Validate() error {
-	if _, err := control.Parse(f.Control); err != nil {
+	global, err := control.Parse(f.Control)
+	if err != nil {
+		return err
+	}
+	if _, err := parsePrefixes(f.Consumer.Allow); err != nil {
+		return fmt.Errorf("consumer.allow: %w", err)
+	}
+	if _, err := parsePeers(f.Consumer.Peers, global); err != nil {
 		return err
 	}
 	var level slog.Level
@@ -201,6 +220,52 @@ func (f File) Validate() error {
 		return errors.New("data is not set")
 	}
 	return nil
+}
+
+// parsePrefix reads an IP prefix, or one address as a prefix of its own.
+func parsePrefix(s string) (netip.Prefix, error) {
+	s = strings.TrimSpace(s)
+	if p, err := netip.ParsePrefix(s); err == nil {
+		return p, nil
+	}
+	addr, err := netip.ParseAddr(s)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("%q is not an IP prefix or address", s)
+	}
+	return netip.PrefixFrom(addr, addr.BitLen()), nil
+}
+
+func parsePrefixes(list []string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, s := range list {
+		p, err := parsePrefix(s)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// parsePeers reads consumer.peers, refusing an entry above the global
+// level.
+func parsePeers(list []PeerEntry, global control.Level) ([]shifter.Peer, error) {
+	var out []shifter.Peer
+	for _, e := range list {
+		p, err := parsePrefix(e.Prefix)
+		if err != nil {
+			return nil, fmt.Errorf("consumer.peers: %w", err)
+		}
+		level, err := control.Parse(e.Control)
+		if err != nil {
+			return nil, fmt.Errorf("consumer.peers, %s: %w", e.Prefix, err)
+		}
+		if level > global {
+			return nil, fmt.Errorf("consumer.peers: %s at %s is above control %s, the ceiling", e.Prefix, level, global)
+		}
+		out = append(out, shifter.Peer{Prefix: p, Control: level})
+	}
+	return out, nil
 }
 
 // parseAddrPort reads an IP with an optional port.
@@ -297,6 +362,15 @@ func Render(f File) string {
 	line(1, "max_sources", fmt.Sprint(f.Consumer.MaxSources), "consumer addresses tracked for the rate limit, the recent peers and the subscriptions; the oldest is forgotten for a new one")
 	line(1, "max_subscriptions_per_source", fmt.Sprint(f.Consumer.MaxSubscriptionsPerSource), "COV subscriptions one consumer address may hold; beyond it a SubscribeCOV is refused")
 	line(1, "segment_timeout", duration(f.Consumer.SegmentTimeout), "wait for the next Segment-ACK of a segmented reply before it is aborted")
+	list(1, "allow", f.Consumer.Allow, "source prefixes served, the tunnel's; empty serves every source, with a warning at start")
+	if len(f.Consumer.Peers) == 0 {
+		line(1, "peers", "[]", "a level per source prefix, first match wins, none above control: [{prefix: 10.8.0.7/32, control: no-write}]")
+	} else {
+		line(1, "peers", "", "a level per source prefix, first match wins, none above control")
+		for _, e := range f.Consumer.Peers {
+			b.WriteString(fmt.Sprintf("    - {prefix: %s, control: %s}\n", e.Prefix, e.Control))
+		}
+	}
 	b.WriteString("\n")
 
 	b.WriteString("# What the shifter will send to the site: no-write | limited | full-service.\n")

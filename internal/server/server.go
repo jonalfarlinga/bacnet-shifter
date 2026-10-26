@@ -14,7 +14,8 @@
 // itself behind a router is answered through that router, with the
 // consumer's network and MAC as the destination.
 //
-// The server bounds what a source can make it do: a token bucket per source
+// The server serves only the sources within Config.Allow, when it is set,
+// and bounds what a source can make it do: a token bucket per source
 // rations the requests it takes, a semaphore caps the confirmed requests
 // handled at once, a segmented reply is aborted when its acknowledgements
 // stop, and a handler that panics loses one message. Config has the bounds
@@ -77,6 +78,10 @@ type Config struct {
 	Broadcast netip.AddrPort
 	// Exclude drops datagrams from these subnets, as the client does.
 	Exclude []netip.Prefix
+	// Allow, when set, is the source prefixes served: a datagram from any
+	// other source is dropped before it is parsed, counted, and logged at
+	// Debug once per source per minute. Empty serves every source.
+	Allow []netip.Prefix
 
 	// Timeout is how long a confirmed request to a consumer waits for its
 	// acknowledgement, and Retries how often it is sent again.
@@ -228,8 +233,9 @@ type segmented struct {
 type Dropped struct {
 	// InFlight is the confirmed requests dropped at MaxInFlight, Rate the
 	// datagrams dropped by the per-source rate limit, Panics the handler
-	// calls that panicked and were recovered.
-	InFlight, Rate, Panics uint64
+	// calls that panicked and were recovered, Allow the datagrams from
+	// sources outside Allow.
+	InFlight, Rate, Panics, Allow uint64
 }
 
 // Server owns the consumer socket.
@@ -242,7 +248,9 @@ type Server struct {
 	inFlight chan struct{}
 	limiter  *limiter
 
-	droppedInFlight, droppedRate, panics atomic.Uint64
+	droppedInFlight, droppedRate, panics, droppedAllow atomic.Uint64
+	// allowLogged is when each source outside Allow was last logged.
+	allowLogged *Bounded[time.Time]
 
 	mu sync.Mutex
 	// pending is the confirmed requests the handler has not answered yet:
@@ -310,6 +318,7 @@ func Open(cfg Config, h Handler) (*Server, error) {
 	if cfg.MaxRPSPerSource > 0 {
 		s.limiter = newLimiter(cfg.MaxRPSPerSource, cfg.MaxSources)
 	}
+	s.allowLogged = NewBounded[time.Time](cfg.MaxSources)
 	go s.readLoop()
 	return s, nil
 }
@@ -319,7 +328,29 @@ func (s *Server) Local() netip.AddrPort { return s.cfg.Local }
 
 // Dropped is what the server has refused to handle since it opened.
 func (s *Server) Dropped() Dropped {
-	return Dropped{InFlight: s.droppedInFlight.Load(), Rate: s.droppedRate.Load(), Panics: s.panics.Load()}
+	return Dropped{InFlight: s.droppedInFlight.Load(), Rate: s.droppedRate.Load(), Panics: s.panics.Load(), Allow: s.droppedAllow.Load()}
+}
+
+// allowed reports whether a source is served: any when Allow is empty,
+// otherwise one within a listed prefix. A source that is not is counted
+// and logged at Debug once a minute.
+func (s *Server) allowed(src netip.AddrPort) bool {
+	if len(s.cfg.Allow) == 0 {
+		return true
+	}
+	for _, p := range s.cfg.Allow {
+		if p.Contains(src.Addr()) {
+			return true
+		}
+	}
+	s.droppedAllow.Add(1)
+	key := src.Addr().String()
+	now := time.Now()
+	if last, ok := s.allowLogged.Get(key); !ok || now.Sub(last) >= time.Minute {
+		s.allowLogged.Put(key, now)
+		s.log.Debug("dropped a datagram from a source outside consumer.allow", "from", src)
+	}
+	return false
 }
 
 // Close stops the server.
@@ -387,6 +418,9 @@ func (s *Server) readLoop() {
 		}
 		if s.excluded(src.Addr()) {
 			s.log.Debug("dropped a datagram from another adapter's subnet", "from", src)
+			continue
+		}
+		if !s.allowed(src) {
 			continue
 		}
 		s.handle(src, raw)
