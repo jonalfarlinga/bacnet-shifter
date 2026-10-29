@@ -6,7 +6,7 @@ The principle, in one line: **deny what has not been allowed**, on the strings t
 
 ## 1. The packages
 
-Six packages, P1 to P6. The first two touch only the shifter. P3 to P5 add configuration and a small amount of code. P6 is a library milestone. The objectives (O1 to O8) and threats (S, T, R, I, D, E) are the threat model's.
+Six packages, P1 to P6. The first two touch only the shifter. P3 to P5 add configuration and a small amount of code. P6 was a library milestone, cancelled on 2026-10-29 (§7). The objectives (O1 to O8) and threats (S, T, R, I, D, E) are the threat model's.
 
 | | Package | Closes | Touches | Library | Rules revised |
 |---|---|---|---|---|---|
@@ -15,9 +15,9 @@ Six packages, P1 to P6. The first two touch only the shifter. P3 to P5 add confi
 | **P3** | Consumer identity: the tunnel, the allow list, per-consumer level | O3; S1, I10 (with the tunnel), R1 (the identity half) | `internal/server`, `internal/shifter`, config, README | none | the non-goals, the consumer side, the levels |
 | **P4** | Policy and audit: the write allow list, the audit log | O2, O4; T2, T6, R1, R2 | `internal/control`, `internal/shifter`, `cmd/shifter`, config | none | the write rules, the host |
 | **P5** | Host and secrets: start-up checks, key store, log mode, the deployment checklist | O7; I9, I11, T5, T6 | `cmd/shifter`, `internal/pseudonym`, README | none | the key, the host |
-| **P6** | BACnet/SC on the consumer side | O3 the standard's way; I10 | the library, then `internal/server` | **L6** | the non-goals, the consumer side |
+| ~~**P6**~~ | BACnet/SC on the consumer side; **cancelled 2026-10-29**, the tunnel of P3 being the consumer side's identity and encryption | O3, I10, by P3 | — | — | — |
 
-Order: P1, then P2, then P3, then P4; P5 at any point after P1, since it is independent; P6 as the next library milestone, L4 having been cancelled on 2026-10-22. §8 says why this order.
+Order: P1, then P2, then P3, then P4; P5 at any point after P1, since it is independent. P1 to P5 were built between 2026-10-26 and 2026-10-29; P6 was cancelled. §8 says why this order.
 
 ## 2. P1 — Robustness
 
@@ -78,7 +78,7 @@ Test 1 in its new form, test 2 adjusted, the new unit test; README's permissions
 
 **Rules landed 2026-10-26** in the README (the setup section on the consumer side, the per-consumer sentence over the permissions table and its allow-list row) and in the threat model (S1, I10 and R1, assumption 8, claim 6 of §8, decisions 2 and 3 taken); the code the same day. Where the build departs from the text below: the allow list is checked in the server's read loop on the datagram's IP source, so a routed consumer is judged by its router's address, which is what a tunnel identifies; the per-peer level is likewise matched on the IP source; the log line for a dropped source is kept to one a minute per source through a bounded map, so a flood of spoofed sources cannot grow it; and a bare address in `consumer.allow` or a peer prefix is taken as a prefix of its own.
 
-BACnet/IP cannot authenticate a sender, and the shifter should not try to add a scheme of its own to it. The identity comes from below the protocol, now, and from BACnet/SC, later (P6).
+BACnet/IP cannot authenticate a sender, and the shifter should not try to add a scheme of its own to it. The identity comes from below the protocol: the tunnel. BACnet/SC was the standard's route to the same thing (P6), and was cancelled on 2026-10-29.
 
 ### 4.1 The tunnel
 
@@ -127,6 +127,8 @@ Gate: a test for the permission check on each platform the CI runs; README secti
 
 ## 7. P6 — BACnet/SC on the consumer side (L6)
 
+**Cancelled 2026-10-29.** The consumer side runs over the authenticated tunnel of P3, which gives every consumer an identity and encrypts the LAN leg; BACnet/SC would have been the standard's way to the same two things, at the cost of a transport in the library and certificates for every consumer, for a deployment that does not ask for it. The outline below is kept as the record of what it would have been, should a consumer that speaks only BACnet/SC ever appear; the library stays plumbing and client only, with no SC transport.
+
 The standard's answer to O3 and I10: BACnet Secure Connect (ASHRAE 135-2020, Clause AB) carries BACnet over WebSockets with TLS 1.3, mutual authentication by device certificates, and a hub that connects the nodes. With it the consumer side needs no tunnel: each consumer holds a certificate the operator issued, the shifter is a node (or the hub), and the allow list of P3 becomes the certificates' identities.
 
 It is a library project, **L6**, proposed here only in outline and designed when its turn comes:
@@ -146,7 +148,7 @@ The site side stays BACnet/IP: the site is what it is. The sizing is weeks, not 
 5. **P4** fourth, since the audit log needs P3's identity to be worth anything, and the write allow list is the first thing a reviewer will ask for after identity.
 6. **P5** at any point after P1, in its own session: it touches `cmd/shifter` and the README and nothing the other packages change.
 7. **L4** (the server package into the library) was cancelled on 2026-10-22: the library handles the plumbing, and `internal/server` stays in the shifter, where P1's server changes land.
-8. **P6** as its own milestone, the next library one.
+8. **P6** was to be its own milestone, the next library one; cancelled on 2026-10-29.
 
 Versions are the user's: the v0.5.0 once reserved for the server move is free again. The packages above can be tagged as patch versions on the way, or P1 and P2 together as the first "hardened" minor; the plan does not decide it.
 
@@ -195,7 +197,7 @@ Beyond the tests: **an external review** of the threat model and the code before
 ## 11. Decisions carried from the threat model
 
 1. The strict profile (§12.1): included in P2 as `pseudonym.strict`, off by default.
-2. Identity by tunnel now, BACnet/SC later (§12.2): taken with P3 on 2026-10-26.
+2. Identity by tunnel now, BACnet/SC later (§12.2): the tunnel taken with P3 on 2026-10-26; BACnet/SC cancelled with P6 on 2026-10-29.
 3. `consumer.allow` empty means any source, with a Warn (§12.3): taken with P3.
 4. `writes.allow` empty means nothing is writable at `full-service` (§12.4): taken with P4 on 2026-10-26.
 
