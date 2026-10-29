@@ -790,4 +790,8 @@ the shifter at `limited`, and checks every device comes through under a
 pseudonym, that object lists and errors match, that a subscription to the
 first object with a present value works when the device takes one, and
 that nothing real crosses the consumer socket. It needs port 47808 free on
-that adapter.
+that adapter. Under the same variable, `TestSmokeGuard` runs the guard
+against the real site: at `no-write` and at `limited` a write from a
+consumer is refused with service-request-denied and no WriteProperty
+leaves the site socket, and a subscription is refused at `no-write` and
+acknowledged at `limited`.
