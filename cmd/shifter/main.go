@@ -32,6 +32,7 @@ import (
 
 	"github.com/jonalfarlinga/bacnet-shifter/internal/audit"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/control"
+	"github.com/jonalfarlinga/bacnet-shifter/internal/host"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/pseudonym"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/shifter"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/survey"
@@ -67,19 +68,33 @@ func run(listTable bool, filter string) error {
 	}
 	var level slog.Level
 	level.UnmarshalText([]byte(f.Log.Level))
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	opts := &slog.HandlerOptions{Level: level}
+	if !f.Log.RealValues {
+		opts.ReplaceAttr = shifter.RedactReal
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, opts))
 
-	if err := os.MkdirAll(f.Data, 0o700); err != nil {
+	if err := os.MkdirAll(f.Data.Dir, 0o700); err != nil {
 		return fmt.Errorf("data directory: %w", err)
 	}
-	key, created, err := pseudonym.LoadOrCreate(filepath.Join(f.Data, "key"))
+	if f.Data.Unchecked {
+		logger.Warn("data.unchecked is set: the data directory's permissions were not checked", "dir", f.Data.Dir)
+	} else if err := host.CheckDir(f.Data.Dir); err != nil {
+		return fmt.Errorf("data directory: %w (or set data.unchecked: true, for development only)", err)
+	}
+	store, _ := pseudonym.ParseStore(f.Data.KeyStore)
+	keyPath := filepath.Join(f.Data.Dir, "key")
+	key, created, converted, err := pseudonym.LoadOrCreateIn(keyPath, store)
 	if err != nil {
 		return fmt.Errorf("key: %w", err)
 	}
 	if created {
-		logger.Warn("key file created; with table.json it is the de-anonymization secret, to back up and never copy to the consumer side", "path", filepath.Join(f.Data, "key"))
+		logger.Warn("key file created; with table.json it is the de-anonymization secret, to back up and never copy to the consumer side", "path", keyPath, "store", store)
 	}
-	tb, err := table.Open(filepath.Join(f.Data, "table.json"), pseudonym.New(key), f.Consumer.Network)
+	if converted {
+		logger.Warn("key file rewritten in the store data.key_store names", "path", keyPath, "store", store)
+	}
+	tb, err := table.Open(filepath.Join(f.Data.Dir, "table.json"), pseudonym.New(key), f.Consumer.Network)
 	if err != nil {
 		return fmt.Errorf("table: %w", err)
 	}
@@ -139,6 +154,7 @@ func build(f File, logger *slog.Logger, tb *table.Table) (cfg shifter.Config, cl
 		MaxSubscriptionsPerSource: f.Consumer.MaxSubscriptionsPerSource,
 		Table:                     tb, Logger: logger,
 	}
+	cfg.RedactLog = !f.Log.RealValues
 	cfg.Consumer.MaxInFlight, cfg.Consumer.MaxRPSPerSource = f.Consumer.MaxInFlight, f.Consumer.MaxRPSPerSource
 	cfg.Consumer.MaxSources, cfg.Consumer.SegmentTimeout = f.Consumer.MaxSources, f.Consumer.SegmentTimeout
 	if cfg.Consumer.Allow, err = parsePrefixes(f.Consumer.Allow); err != nil {

@@ -153,6 +153,11 @@ chmod 700 data
 icacls data /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" /grant:r "SYSTEM:(OI)(CI)F" /grant:r "Administrators:(OI)(CI)F"
 ```
 
+(in PowerShell, `$env:USERNAME` for `%USERNAME%`; a service account by its
+name). A directory under a user profile often inherits more than the
+account, a sandbox or management group among them, and the refusal names
+whoever it is.
+
 `data.unchecked: true` skips the check, for development, and is logged at
 `warn` on every start. `data.key_store` says how the key file is held:
 `file`, the default, is the key in hex; `dpapi`, on Windows only, is the
@@ -721,6 +726,15 @@ devices behind a router, and the survey finding a simulated device that the
 shifter's Who-Is cannot reach. The `internal/survey` tests are the
 utility's, run against the simulated devices with the neighbor table and
 the pings faked; one pings loopback for real, and `-short` skips it.
+
+The host checks have tests on each platform: `internal/host` locks a
+directory, passes it, opens it to everyone (`icacls` by SID on Windows,
+`chmod` elsewhere) and is refused, and passes again once it is closed;
+`internal/pseudonym` creates the key file in a store, reads it back, and
+on Windows converts it to the DPAPI store and back, checking that the
+protected file holds no hex; and a run of the shifter with
+`log.real_values: false` leaves no real name, instance or address in the
+log while the virtual instances stay.
 
 The write allow list and the audit log are tested together: six writes
 under a list of two entries, covered by type and property, by device and

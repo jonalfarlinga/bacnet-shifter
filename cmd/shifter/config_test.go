@@ -83,6 +83,21 @@ func TestLoad(t *testing.T) {
 	if peers, _ := parsePeers(f.Consumer.Peers, 1); len(peers) != 2 || peers[0].Control != 0 || peers[1].Control != 1 {
 		t.Errorf("consumer.peers parsed as %+v", peers)
 	}
+	// The data block in both forms, and the log option.
+	if err := os.WriteFile(path, []byte("sim: default\ndata: elsewhere\nlog:\n  real_values: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err = Load(path)
+	if err != nil || f.Validate() != nil || f.Data.Dir != "elsewhere" || f.Data.KeyStore != "file" || f.Data.Unchecked || f.Log.RealValues {
+		t.Errorf("the old data form: %+v, %+v, %v", f.Data, f.Log, err)
+	}
+	if err := os.WriteFile(path, []byte("sim: default\ndata:\n  dir: d\n  unchecked: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err = Load(path)
+	if err != nil || f.Validate() != nil || f.Data.Dir != "d" || !f.Data.Unchecked || f.Data.KeyStore != "file" {
+		t.Errorf("the data block: %+v, %v", f.Data, err)
+	}
 	// The write allow list and the audit file, and their rendering.
 	if err := os.WriteFile(path, []byte("sim: default\nwrites:\n  allow:\n    - {object: analog-value, property: present-value}\n    - {object: \"*\", property: \"*\", device: 3410122, consumer: 10.8.0.7/32}\naudit:\n  file: audit.jsonl\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -113,6 +128,8 @@ func TestLoad(t *testing.T) {
 		"bound off":    "sim: default\nconsumer:\n  max_in_flight: 0\n",
 		"bad allow":    "sim: default\nconsumer:\n  allow: [everyone]\n",
 		"bad write":    "sim: default\nwrites:\n  allow: [{object: no-such-type, property: present-value}]\n",
+		"bad store":    "sim: default\ndata:\n  key_store: vault\n",
+		"no data dir":  "sim: default\ndata:\n  dir: \"\"\n",
 		"bad device":   "sim: default\nwrites:\n  allow: [{object: analog-value, property: present-value, device: AHU}]\n",
 		"bad peer":     "sim: default\nconsumer:\n  peers: [{prefix: 10.8.0.0/24, control: root}]\n",
 		"peer above":   "sim: default\ncontrol: limited\nconsumer:\n  peers: [{prefix: 10.8.0.0/24, control: full-service}]\n",

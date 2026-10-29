@@ -120,6 +120,10 @@ type Config struct {
 	// Table is the open table, which carries V.
 	Table  *table.Table
 	Logger *slog.Logger
+	// RedactLog blanks every attribute of the site client's log lines,
+	// for a log without real values; the shifter's own lines are
+	// redacted by RedactReal on the handler Logger was made with.
+	RedactLog bool
 }
 
 // Peer is one entry of the per-consumer levels: the consumers whose source
@@ -319,7 +323,7 @@ func Start(cfg Config) (*Shifter, error) {
 
 	cfg.Site.ReadOnly = cfg.Control == control.NoWrite
 	cfg.Site.OnIAm = s.onIAm
-	cfg.Site.Logger = cfg.Logger.With("side", "site")
+	cfg.Site.Logger = siteLogger(cfg.Logger, cfg.RedactLog)
 	inFlight := cfg.MaxInFlightNet
 	cfg.Site.MaxInFlightNet = func(uint16) int { return inFlight }
 	cfg.Consumer.Logger = cfg.Logger.With("side", "consumer")

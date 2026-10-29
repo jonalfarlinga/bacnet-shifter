@@ -38,12 +38,17 @@ consumer:
 # Each level includes the ones before it.
 control: no-write
 
-# Directory for the key and table.json. It must be readable by the shifter's account only.
-data: data
+# The data directory holds the key and table.json, together the de-anonymization secret. The shifter
+# refuses to start while anyone but its own account can read it; the README says how to fix that.
+data:
+  dir: data
+  unchecked: false        # skip the permission check, for development; logged at warn
+  key_store: file         # file: the key in hex | dpapi: encrypted to this account, Windows only; converted either way at start
 
 log:
   level: info             # debug | info | warn | error
   frames: false           # log every datagram on both sockets, at debug
+  real_values: true       # false replaces every real name, instance and address in the log with [real], for a log that is shipped
 
 # Run against the library's simulated devices on loopback instead of the adapters:
 # "" (off), default (sim.Start) or remote (sim.RemoteSite: a BBMD, a router and routed devices).

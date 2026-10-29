@@ -14,6 +14,7 @@ import (
 	"github.com/jonalfarlinga/bacnet/client"
 
 	"github.com/jonalfarlinga/bacnet-shifter/internal/control"
+	"github.com/jonalfarlinga/bacnet-shifter/internal/pseudonym"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/server"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/shifter"
 	"github.com/jonalfarlinga/bacnet-shifter/internal/survey"
@@ -54,11 +55,12 @@ type File struct {
 		Allow []string    `yaml:"allow"`
 		Peers []PeerEntry `yaml:"peers"`
 	} `yaml:"consumer"`
-	Control string `yaml:"control"`
-	Data    string `yaml:"data"`
+	Control string     `yaml:"control"`
+	Data    DataConfig `yaml:"data"`
 	Log     struct {
-		Level  string `yaml:"level"`
-		Frames bool   `yaml:"frames"`
+		Level      string `yaml:"level"`
+		Frames     bool   `yaml:"frames"`
+		RealValues bool   `yaml:"real_values"`
 	} `yaml:"log"`
 	Sim    string `yaml:"sim"`
 	Survey struct {
@@ -105,6 +107,31 @@ func parseWriteAllow(entries []WriteEntry) (control.WriteAllow, error) {
 	return control.ParseWriteAllow(names)
 }
 
+// DataConfig is the data block: the directory, whether its permissions
+// are checked at start, and how the key file holds the key. The older
+// form, data as the directory alone, still reads.
+type DataConfig struct {
+	Dir       string `yaml:"dir"`
+	Unchecked bool   `yaml:"unchecked"`
+	KeyStore  string `yaml:"key_store"`
+}
+
+// UnmarshalYAML takes a scalar as the directory, a block as the fields,
+// over whatever is already set.
+func (d *DataConfig) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode {
+		d.Dir = n.Value
+		return nil
+	}
+	type plain DataConfig
+	p := plain(*d)
+	if err := n.Decode(&p); err != nil {
+		return err
+	}
+	*d = DataConfig(p)
+	return nil
+}
+
 // PeerEntry is one entry of consumer.peers: the consumers within Prefix
 // are served at Control.
 type PeerEntry struct {
@@ -139,8 +166,10 @@ func Defaults() File {
 	f.Consumer.Allow = []string{}
 	f.Consumer.Peers = []PeerEntry{}
 	f.Control = control.NoWrite.String()
-	f.Data = "data"
+	f.Data.Dir = "data"
+	f.Data.KeyStore = string(pseudonym.StoreFile)
 	f.Log.Level = "info"
+	f.Log.RealValues = true
 	f.Survey.At = "02:00"
 	f.Survey.Ranges = []string{}
 	f.Survey.Rate = survey.DefaultPerSec
@@ -242,8 +271,11 @@ func (f File) Validate() error {
 	if _, err := control.ParseReserved(f.Reserved.Services, f.Reserved.Objects, f.Reserved.Properties); err != nil {
 		return err
 	}
-	if strings.TrimSpace(f.Data) == "" {
-		return errors.New("data is not set")
+	if strings.TrimSpace(f.Data.Dir) == "" {
+		return errors.New("data.dir is not set")
+	}
+	if _, err := pseudonym.ParseStore(f.Data.KeyStore); err != nil {
+		return err
 	}
 	if _, err := parseWriteAllow(f.Writes.Allow); err != nil {
 		return err
@@ -414,12 +446,17 @@ func Render(f File) string {
 	b.WriteString("# Each level includes the ones before it.\n")
 	line(0, "control", f.Control, "")
 	b.WriteString("\n")
-	b.WriteString("# Directory for the key and table.json. It must be readable by the shifter's account only.\n")
-	line(0, "data", f.Data, "")
+	b.WriteString("# The data directory holds the key and table.json, together the de-anonymization secret. The shifter\n")
+	b.WriteString("# refuses to start while anyone but its own account can read it; the README says how to fix that.\n")
+	b.WriteString("data:\n")
+	line(1, "dir", f.Data.Dir, "")
+	line(1, "unchecked", fmt.Sprint(f.Data.Unchecked), "skip the permission check, for development; logged at warn")
+	line(1, "key_store", f.Data.KeyStore, "file: the key in hex | dpapi: encrypted to this account, Windows only; converted either way at start")
 	b.WriteString("\n")
 	b.WriteString("log:\n")
 	line(1, "level", f.Log.Level, "debug | info | warn | error")
 	line(1, "frames", fmt.Sprint(f.Log.Frames), "log every datagram on both sockets, at debug")
+	line(1, "real_values", fmt.Sprint(f.Log.RealValues), "false replaces every real name, instance and address in the log with [real], for a log that is shipped")
 	b.WriteString("\n")
 	b.WriteString("# Run against the library's simulated devices on loopback instead of the adapters:\n")
 	b.WriteString("# \"\" (off), default (sim.Start) or remote (sim.RemoteSite: a BBMD, a router and routed devices).\n")
