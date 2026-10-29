@@ -1,6 +1,6 @@
 # bacnet-shifter — Threat model
 
-Companion to [security-plan.md](security-plan.md), which says what is built to make a security layer and in what order. This document says what the shifter protects, from whom, through which openings, and how each threat stands against the code as it is. It was written on 2026-10-15 against v0.3.0 (`b4402f5`) and every finding in §7 was checked in the code.
+Companion to [security-plan.md](security-plan.md), which says what is built to make a security layer and in what order. This document says what the shifter protects, from whom, through which openings, and how each threat stands against the code as it is. It was written on 2026-10-15 against v0.3.0 (`b4402f5`) and every finding in §7 was checked in the code. [threat-assessment.md](threat-assessment.md), written 2026-10-29 against `baa61ba` after P1 to P5, re-reads the claims of §8 against the code, lists what the packages left open or opened anew, and revises the standings of §7 in its §3.
 
 The one-sentence summary: the shifter is today a sound **disclosure control** with a well-built write guard, and it is **not yet a security boundary**, because nothing on the consumer side is authenticated and nothing bounds what a consumer, or anyone who can put a datagram on the consumer network, can make it do.
 

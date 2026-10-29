@@ -13,7 +13,9 @@ This file says what the shifter does and how it is set up.
 [docs/threat-model.md](docs/threat-model.md) says what it protects,
 from whom, and which of those claims hold today;
 [docs/security-plan.md](docs/security-plan.md) says what is built, in what
-order, to make it a security boundary. Milestones M1 to M3 are built: the `no-write` level, in which the
+order, to make it a security boundary;
+[docs/threat-assessment.md](docs/threat-assessment.md) is the assessment
+of 2026-10-29 against the code with the plan's packages built. Milestones M1 to M3 are built: the `no-write` level, in which the
 shifter forwards Who-Is, ReadProperty, ReadPropertyMultiple and ReadRange
 and nothing else; the `limited` level, which adds change-of-value
 subscriptions; and the `full-service` level, which adds WriteProperty under
