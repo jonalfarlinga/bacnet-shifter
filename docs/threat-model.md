@@ -38,7 +38,7 @@ Data flows: a consumer's request is parsed, checked against the level, translate
 | A1 | **Site identity**: object names, descriptions, locations, model and serial numbers, device instances, IP addresses, MACs, network numbers, free text that names rooms, tenants, equipment | On the site; in the table; in the log | Any of it reaching a consumer or the consumer network |
 | A2 | **Site state**: present values, setpoints, out-of-service flags, alarm configuration, life-safety objects, device operation | On the site | Changed by anyone the level does not allow, or beyond what the level allows |
 | A3 | **Site availability**: the devices' subscription tables, their request capacity, the routers' capacity, the site's bandwidth | On the site | Exhausted through the shifter |
-| A4 | **The de-anonymization secret**: the key and the table | Data directory | Read or copied by anyone but the shifter's account |
+| A4 | **The de-anonymization secret**: the key and the table | The data directory, checked at start since P5; the key under DPAPI when `data.key_store` is `dpapi` | Read or copied by anyone but the shifter's account |
 | A5 | **The shifter's availability** | The host | Crashed, hung or starved by anything either side sends |
 | A6 | **The audit record**: who sent which write, and what was refused | The audit file (`audit.file`, since P4), and the log | Missing, unattributable, or lost |
 | A7 | **The configuration**: the level, the adapters, the reserved set | `config.yaml` | Changed by anyone but the operator; set to `full-service` without anyone noticing |
@@ -120,8 +120,8 @@ Each threat has an identifier by category (S spoofing, T tampering, R repudiatio
 | T2 | At full-service, a consumer writes to any object and property of any device, at 13 to 16, outside the reserved set. That is the level's definition, and the exposure is the whole site minus a deny list. | Since P4 (2026-10-26) a write is forwarded only when a `writes.allow` entry covers its object type, property, and the device and consumer the entry names; the list is empty by default, so `full-service` writes nothing until the operator lists what may be written. The reserved set and the priority rule stay the floor under the list. | **held** | P4 |
 | T3 | A write to a life-safety or alarm object, property or service. | Refused at every level by the reserved set; the set is configuration. | **held** | — |
 | T4 | A write that renames a site object and breaks the mapping. | Refused at every level. | **held** | — |
-| T5 | The table or the key is edited on the host: a device's address is redirected, a pseudonym forged. | Nothing checks the file's integrity. | **accepted** (Z2) | P5 |
-| T6 | `config.yaml` is edited to `full-service`, or to the wrong adapter. | The level is printed at start; nothing else. | **partial** | P4, P5 |
+| T5 | The table or the key is edited on the host: a device's address is redirected, a pseudonym forged. | Nothing checks the file's integrity; since P5 the directory is readable by the shifter's account only, or the shifter does not start, so an edit takes that account or an administrator. | **accepted** (Z2) | — |
+| T6 | `config.yaml` is edited to `full-service`, or to the wrong adapter. | The level, the allow lists and the peers are in the audit file's `start` line (P4) and in the log at start; the deployment checklist (P5) says to read it. Nothing stops the edit: the host is the root of trust. | **partial** | — |
 
 ### 7.3 Repudiation
 
@@ -142,9 +142,9 @@ Each threat has an identifier by category (S spoofing, T tampering, R repudiatio
 | I6 | Timing and traffic: which objects are read how often, COV cadence, the difference between a locally answered and a forwarded request. | Not hidden, by design. | **accepted** | — |
 | I7 | Pseudonyms are the same for every consumer and across time, so one consumer's stored data joins another's, and a table leaked from any context de-anonymizes all of them. | By design (goal 3: stable pseudonyms). | **accepted** | — |
 | I8 | A consumer uses the shifter as an oracle: Who-Has by a guessed real name; a read of a guessed real device instance. | Who-Has matches pseudonyms only; an unissued virtual instance is answered unknown-object locally and never sent to the site. | **held** | — |
-| I9 | The log discloses the site: at Info every device line carries the real name and address beside the pseudonym; `-table` prints everything. If the log is shipped off the host, it is the reverse table. | On the host, by design. | **accepted** on the host; **gap** if shipped | P5 |
+| I9 | The log discloses the site: at Info every device line carries the real name and address beside the pseudonym; `-table` prints everything. If the log is shipped off the host, it is the reverse table. | On the host, by design. Since P5 `log.real_values: false` replaces every real value in the log with `[real]`, for a log that is shipped; the audit file and `-table` keep real values and stay on the host. | **accepted** on the host; **held** if shipped with `log.real_values: false` | — |
 | I10 | A passive observer on the consumer network reads what consumers read and what they write. | BACnet/IP is plaintext. The observer learns no more than a consumer about A1, and learns every written value. With the tunnel of P3 the LAN leg is encrypted and the observer sees nothing of either; without it, as before. | **held** with the tunnel; **gap** without | P3, then P6 |
-| I11 | The key and table at rest are plaintext in a directory the program cannot lock on NTFS. | 0600 on the key; the README says to lock the directory. | **partial** | P5 |
+| I11 | The key and table at rest are plaintext in a directory the program cannot lock on NTFS. | Since P5 the shifter refuses to start while the data directory is readable by anyone but its own account (mode bits on Unix; the ACL on Windows, where any grant to a principal other than the owner, SYSTEM and Administrators is open), unless `data.unchecked`, which is logged at warn; `data.key_store: dpapi` on Windows encrypts the key file to the account. The table is plaintext still. | **held** for the key and the directory; the table by the directory alone | — |
 | I12 | The shifter's own address is visible on the site, in a BBMD's foreign device table and as the source of every request. | By design. | **accepted** | — |
 
 ### 7.5 Denial of service
@@ -182,6 +182,8 @@ The claims the shifter can make at v0.3.0, each backed by a test:
 6. **Only sources on `consumer.allow` are served, each at the level of its `consumer.peers` entry and never above `control`** (S1, with the tunnel the README describes; the allow-list and per-peer tests, test 3 per peer level). Added with P3 on 2026-10-26.
 7. **At `full-service` only a write that a `writes.allow` entry covers reaches the site, and none at all until the operator lists one** (T2; test 8 with the allow list). Added with P4 on 2026-10-26.
 8. **Every forwarded write and every refusal is recorded, append-only, with the consumer's address, its level, the real and virtual object, the property, the priority and the outcome** (R1, R2; the audit test). Added with P4.
+9. **The shifter does not start while the data directory is readable by anyone but its own account**, unless told to skip the check, which it logs (I11; the permission test on each platform). Added with P5 on 2026-10-29.
+10. **The log can be run without a real value in it** (I9; `log.real_values: false`, the redaction test). Added with P5.
 
 ## 9. Security objectives
 

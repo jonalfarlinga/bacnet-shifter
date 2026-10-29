@@ -136,12 +136,40 @@ give `consumer.port` another number, or run each side in its own VM or
 network namespace. A consumer on the shifter's own machine can be served on
 `127.0.0.1` instead of an adapter.
 
-**The data directory** (`data` by default) holds the key file and
-`table.json`. The key is written with mode 0600, which NTFS ignores: on
-Windows make the directory one that only the shifter's account can read.
-Back up the key and the table together, and never copy either to the
-consumer side; losing the key means every consumer's stored names stop
-matching.
+**The data directory** (`data.dir`, `data` by default; the older
+`data: <dir>` form still reads) holds the key file and `table.json`,
+which are together the de-anonymization secret. The shifter checks the
+directory when it starts and refuses to run while anyone but its own
+account can read it: on Linux and macOS when the mode has any group or
+other bits; on Windows when the directory's access control list grants
+anything to a principal other than the owner, SYSTEM and Administrators.
+The refusal names the directory and says how to fix it:
+
+```bash
+chmod 700 data
+```
+
+```bash
+icacls data /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" /grant:r "SYSTEM:(OI)(CI)F" /grant:r "Administrators:(OI)(CI)F"
+```
+
+`data.unchecked: true` skips the check, for development, and is logged at
+`warn` on every start. `data.key_store` says how the key file is held:
+`file`, the default, is the key in hex; `dpapi`, on Windows only, is the
+key encrypted with the Data Protection API to the shifter's account, so
+that a copied data directory, or the key file read by another account, is
+useless without that account. The shifter converts the file to the store
+named when it starts, either way, and says so at `warn`. Back up the key
+and the table together, and never copy either to the consumer side;
+losing the key means every consumer's stored names stop matching.
+
+**If the key or the table is disclosed**, nothing undoes it for the data
+consumers already hold: whoever has the two can turn every pseudonym a
+consumer ever stored back into the real value. The response is a new key
+and an empty table, by stopping the shifter, moving the data directory
+away and starting it again, after which every consumer's stored names,
+instances and addresses change and their history breaks at that point.
+Tell the consumers before you do it.
 
 To reach a site on another IP subnet, set `site.bbmd` to its BBMD and the
 shifter registers there as a foreign device; `site.add` lists devices that
@@ -219,6 +247,41 @@ firewall confines the port to the tunnel interface; `consumer.peers` names
 every consumer that gets more than the default level, narrowest prefix
 first; and the start-up log shows no warning about an empty allow list.
 
+### Deployment checklist
+
+The host is the root of trust: whoever controls it holds the key, the
+table, the configuration and the level. Before the shifter is relied on
+as a boundary, go through the list; each item is something the shifter
+cannot check for itself, or can only refuse to start without.
+
+- **A dedicated account** that is not an administrator runs the shifter,
+  and nothing else runs under it. On Windows a service account; on Linux a
+  system user with no shell.
+- **No other BACnet software on the host.** Anything else on UDP 47808
+  hears what the shifter hears, on either side.
+- **IP forwarding off** between the two adapters: on Windows
+  `IPEnableRouter` is 0, the default; on Linux `net.ipv4.ip_forward` is 0.
+  The shifter is meant to be the only path between the two networks.
+- **Firewall rules per adapter.** The site adapter: UDP 47808 to and from
+  the site subnet and the BBMD only. The consumer adapter, or the tunnel:
+  UDP `consumer.port` from `consumer.allow` only, and on Linux and macOS
+  confined to the tunnel interface, since the socket there binds every
+  address.
+- **The consumer side** as the checklist above says: the tunnel, the allow
+  list, the peers.
+- **The data directory** passes the start-up check without
+  `data.unchecked`, and on Windows `data.key_store: dpapi` holds the key.
+- **Backups** of the key and the table, together, encrypted, kept off the
+  consumer side; a backup is the secret too.
+- **The log** stays on the host, or is shipped only with
+  `log.real_values: false`, or to a host as trusted as this one. The audit
+  file holds real values and stays on the host.
+- **`writes.allow`** lists only what consumers must write, and
+  `full-service` is set only where the list is wanted; the audit file's
+  `start` line shows what was in effect.
+- **Read the log**, or ship it somewhere that is read: the warnings at
+  start are the shifter's only way to tell you that a check was skipped.
+
 ## Running
 
 ```bash
@@ -229,6 +292,17 @@ Log lines go to stderr at `log.level`; at `info` each device and site
 network is logged as it is discovered, real and virtual side by side, and
 every refused request with the consumer's address, the service and the
 level. `log.frames: true` logs every datagram on both sockets at `debug`.
+
+The log is, by design, the reverse table: real names, instances and
+addresses beside the pseudonyms, so that the operator on the host can see
+what is what. A log that leaves the host should not be. `log.real_values:
+false` replaces every real value in the log with `[real]`, so it says that
+a device was discovered, which virtual instance it got and what was
+refused, but never a real name, instance or address; the error text of a
+request the site did not answer may still name a site address, and the
+`frames` log at `debug` is the datagrams themselves. The audit file is not
+affected: it holds real values and stays on the host. `-table` is the
+operator's tool and is not affected either.
 
 ```bash
 go run ./cmd/shifter -table

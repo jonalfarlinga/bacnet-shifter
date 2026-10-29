@@ -115,6 +115,8 @@ Test 8 with the allow list; the audit test; the README's write rules and operati
 
 ## 6. P5 — Host and secrets
 
+**Rules landed 2026-10-29** in the README (the data directory under Setup, with the check, the fix commands, `data.key_store` and the incident guidance; the deployment checklist; `log.real_values` under Running) and in the threat model (I9 and I11 held, A4, T5 and T6 revised, claims 9 and 10 of §8); the code follows.
+
 - **Start-up checks.** The shifter refuses to start when the data directory is readable by anyone but its own account: on Unix, mode bits for group and other; on Windows, the directory's ACL through `golang.org/x/sys/windows` (a new dependency, to be confirmed), with the README giving the `icacls` command to fix it. The check can be turned off with `data.unchecked: true` for development, which logs at Warn.
 - **The key in the OS key store**, optional: `data.key_store: file | dpapi | keyring`. With `dpapi` on Windows the key file is encrypted to the shifter's account, so a copied data directory is useless without the account; with `keyring` on Linux and macOS the OS keyring holds it. Default `file`, as today.
 - **A log without real values**: `log.real_values: true` by default; `false` prints pseudonyms only, for a log that is shipped. `-table` is unaffected: it is the operator's tool on the host.
